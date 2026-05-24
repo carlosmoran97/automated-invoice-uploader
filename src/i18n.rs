@@ -2,17 +2,22 @@ use crate::{
     domain::date_range::DateRangeError,
     services::{drive_upload::DriveUploadError, gmail_search::GmailSearchError},
 };
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub enum Language {
+    #[serde(rename = "es")]
     Spanish,
+    #[serde(rename = "en")]
     English,
 }
 
 pub const DEFAULT_LANGUAGE: Language = Language::Spanish;
 
-pub fn messages() -> &'static Messages {
-    messages_for(DEFAULT_LANGUAGE)
+impl Default for Language {
+    fn default() -> Self {
+        DEFAULT_LANGUAGE
+    }
 }
 
 pub fn messages_for(language: Language) -> &'static Messages {
@@ -37,6 +42,17 @@ pub struct Messages {
     pub select_initial_date: &'static str,
     pub select_final_date: &'static str,
     pub default_period: &'static str,
+    pub settings_title: &'static str,
+    pub settings_header: &'static str,
+    pub download_dir_label: &'static str,
+    pub drive_root_folder_label: &'static str,
+    pub language_label: &'static str,
+    pub language_spanish: &'static str,
+    pub language_english: &'static str,
+    pub settings_saved: &'static str,
+    pub settings_footer: &'static str,
+    pub settings_empty_download_dir: &'static str,
+    pub settings_empty_drive_root_folder: &'static str,
     pub searching_gmail: &'static str,
     pub search_loader_title: &'static str,
     pub search_loader_stage_query: &'static str,
@@ -75,6 +91,10 @@ pub struct Messages {
     pub review_ready_footer: &'static str,
     pub review_error_footer: &'static str,
     pub review_complete_footer: &'static str,
+    pub invoice_json_error_prefix: &'static str,
+    pub invoice_save_error_prefix: &'static str,
+    pub missing_json_error: &'static str,
+    pub missing_pdf_error: &'static str,
     pub document_type_label: &'static str,
     pub ccf_warning: &'static str,
     pub control_number_label: &'static str,
@@ -181,7 +201,7 @@ static SPANISH: Messages = Messages {
     search_criteria_subtitle: "Selecciona el periodo de Gmail antes de buscar facturas.",
     initial_date: "Fecha inicial",
     final_date: "Fecha final",
-    form_footer: "Tab: cambiar campo  Espacio: abrir calendario  Enter: buscar  q: salir",
+    form_footer: "Tab: cambiar campo  Espacio: abrir calendario  Enter: buscar  s: configuracion  q: salir",
     calendar_footer: "En calendario: flechas dia/semana  PgUp/PgDn mes  Enter/Esc cerrar",
     calendar_is_open: "Calendario abierto",
     press_space_to_open: "Presiona Espacio para abrir",
@@ -189,6 +209,17 @@ static SPANISH: Messages = Messages {
     select_initial_date: "Seleccionar fecha inicial",
     select_final_date: "Seleccionar fecha final",
     default_period: "El periodo predeterminado va del primer al ultimo dia del mes actual.",
+    settings_title: "Configuracion",
+    settings_header: "Preferencias de la aplicacion",
+    download_dir_label: "Carpeta de descarga",
+    drive_root_folder_label: "Carpeta base en Drive",
+    language_label: "Idioma",
+    language_spanish: "Espanol",
+    language_english: "English",
+    settings_saved: "Configuracion guardada.",
+    settings_footer: "Tab: cambiar campo  Texto: editar  Espacio: cambiar idioma  Enter: guardar  Esc: volver  Ctrl+q: salir",
+    settings_empty_download_dir: "La carpeta de descarga no puede estar vacia.",
+    settings_empty_drive_root_folder: "La carpeta base en Drive no puede estar vacia.",
     searching_gmail: "Buscando en Gmail INBOX...",
     search_loader_title: "Escaner de Gmail",
     search_loader_stage_query: "consultando mensajes",
@@ -227,6 +258,10 @@ static SPANISH: Messages = Messages {
     review_ready_footer: "Y: procesar y subir a Drive  n: omitir  q: salir",
     review_error_footer: "n: omitir  q: salir",
     review_complete_footer: "Enter/Esc: volver a resultados  q: salir",
+    invoice_json_error_prefix: "No se pudo leer el JSON de la factura",
+    invoice_save_error_prefix: "No se pudieron guardar los archivos",
+    missing_json_error: "Este correo no tiene un adjunto JSON descargable.",
+    missing_pdf_error: "Este correo no tiene un adjunto PDF descargable.",
     document_type_label: "Tipo de documento",
     ccf_warning: "Este JSON no parece ser CCF (tipoDte 03).",
     control_number_label: "Numero de control",
@@ -261,7 +296,7 @@ static ENGLISH: Messages = Messages {
     search_criteria_subtitle: "Select the Gmail search period before collecting invoice emails.",
     initial_date: "Initial date",
     final_date: "Final date",
-    form_footer: "Tab: switch field  Space: open calendar  Enter: search  q: quit",
+    form_footer: "Tab: switch field  Space: open calendar  Enter: search  s: settings  q: quit",
     calendar_footer: "In calendar: arrows move day/week  PgUp/PgDn month  Enter/Esc close",
     calendar_is_open: "Calendar is open",
     press_space_to_open: "Press Space to open",
@@ -269,6 +304,17 @@ static ENGLISH: Messages = Messages {
     select_initial_date: "Select initial date",
     select_final_date: "Select final date",
     default_period: "The default period is the first through last day of the current month.",
+    settings_title: "Settings",
+    settings_header: "Application preferences",
+    download_dir_label: "Download folder",
+    drive_root_folder_label: "Drive base folder",
+    language_label: "Language",
+    language_spanish: "Espanol",
+    language_english: "English",
+    settings_saved: "Settings saved.",
+    settings_footer: "Tab: switch field  Text: edit  Space: change language  Enter: save  Esc: back  Ctrl+q: quit",
+    settings_empty_download_dir: "Download folder cannot be empty.",
+    settings_empty_drive_root_folder: "Drive base folder cannot be empty.",
     searching_gmail: "Searching Gmail in INBOX...",
     search_loader_title: "Gmail Scanner",
     search_loader_stage_query: "querying messages",
@@ -307,6 +353,10 @@ static ENGLISH: Messages = Messages {
     review_ready_footer: "Y: process and upload to Drive  n: skip  q: quit",
     review_error_footer: "n: skip  q: quit",
     review_complete_footer: "Enter/Esc: back to results  q: quit",
+    invoice_json_error_prefix: "Could not read the invoice JSON",
+    invoice_save_error_prefix: "Could not save the files",
+    missing_json_error: "This email does not have a downloadable JSON attachment.",
+    missing_pdf_error: "This email does not have a downloadable PDF attachment.",
     document_type_label: "Document type",
     ccf_warning: "This JSON does not look like CCF (tipoDte 03).",
     control_number_label: "Control number",
@@ -479,7 +529,10 @@ mod tests {
     #[test]
     fn spanish_is_the_default_language() {
         assert_eq!(DEFAULT_LANGUAGE, Language::Spanish);
-        assert_eq!(messages().search_criteria_title, "Criterios de busqueda");
+        assert_eq!(
+            messages_for(DEFAULT_LANGUAGE).search_criteria_title,
+            "Criterios de busqueda"
+        );
     }
 
     #[test]

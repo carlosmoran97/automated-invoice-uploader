@@ -1,5 +1,5 @@
 use crate::{
-    i18n::{Messages, messages},
+    i18n::Messages,
     services::gmail_search::{AttachmentSummary, CandidateEmail},
 };
 use crossterm::event::{KeyCode, KeyEvent};
@@ -35,8 +35,7 @@ impl ResultsPage {
         self.selected_email_ids = emails.iter().map(|email| email.id.clone()).collect();
     }
 
-    pub fn render(&self, frame: &mut Frame, emails: &[CandidateEmail]) {
-        let text = messages();
+    pub fn render(&self, frame: &mut Frame, emails: &[CandidateEmail], text: &'static Messages) {
         let area = centered_rect(frame.area(), 112, 38);
         let block = Block::bordered()
             .title(format!(" {} ", text.results_title))

@@ -1,6 +1,6 @@
 use crate::{
     domain::invoice::InvoiceSummary,
-    i18n::{Messages, messages},
+    i18n::Messages,
     services::{gmail_search::CandidateEmail, invoice_files::SavedInvoiceFiles},
 };
 use ratatui::{
@@ -45,8 +45,7 @@ pub enum ReviewView<'a> {
 pub struct ReviewPage;
 
 impl ReviewPage {
-    pub fn render(&self, frame: &mut Frame, view: ReviewView<'_>) {
-        let text = messages();
+    pub fn render(&self, frame: &mut Frame, view: ReviewView<'_>, text: &'static Messages) {
         let area = centered_rect(frame.area(), 108, 34);
         let block = Block::bordered()
             .title(format!(" {} ", text.review_title))

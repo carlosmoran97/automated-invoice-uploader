@@ -3,23 +3,26 @@ use crate::{
         home::{HomePage, HomePageAction, HomePageStatus, SearchCriteriaInput},
         results::{ResultsPage, ResultsPageAction},
         review::{ReviewPage, ReviewView},
+        settings::{SettingsInput, SettingsPage, SettingsPageAction},
     },
     domain::{
         date_range::DateRange,
         invoice::{InvoiceParseError, InvoiceSummary},
     },
-    i18n::messages,
+    i18n::{Messages, messages_for},
     services::{
         drive_upload::{DriveUploadError, DriveUploadService},
         gmail_search::{
             CandidateEmail, DownloadedAttachment, GmailSearchError, GmailSearchService,
         },
         invoice_files::{SavedInvoiceFiles, save_invoice_files},
+        settings::{AppSettings, load_settings, save_settings},
     },
 };
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use std::{
+    path::PathBuf,
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
 };
@@ -31,10 +34,12 @@ pub struct App {
     home_page: HomePage,
     results_page: ResultsPage,
     review_page: ReviewPage,
+    settings_page: SettingsPage,
     search: SearchState,
     review: ReviewState,
     results: Vec<CandidateEmail>,
     search_frame: usize,
+    settings: AppSettings,
 }
 
 pub enum AppAction {
@@ -46,6 +51,7 @@ enum Screen {
     Home,
     Results,
     Review,
+    Settings,
 }
 
 enum SearchState {
@@ -112,25 +118,34 @@ enum ReviewError {
 
 impl Default for App {
     fn default() -> Self {
+        let settings = load_settings().unwrap_or_default();
         Self {
             screen: Screen::Home,
             home_page: HomePage::default(),
             results_page: ResultsPage::default(),
             review_page: ReviewPage,
+            settings_page: SettingsPage::default(),
             search: SearchState::Idle,
             review: ReviewState::Idle,
             results: Vec::new(),
             search_frame: 0,
+            settings,
         }
     }
 }
 
 impl App {
+    fn text(&self) -> &'static Messages {
+        messages_for(self.settings.language)
+    }
+
     pub fn render(&self, frame: &mut Frame) {
+        let text = self.text();
         match self.screen {
-            Screen::Home => self.home_page.render(frame, self.home_status()),
-            Screen::Results => self.results_page.render(frame, &self.results),
-            Screen::Review => self.review_page.render(frame, self.review_view()),
+            Screen::Home => self.home_page.render(frame, self.home_status(), text),
+            Screen::Results => self.results_page.render(frame, &self.results, text),
+            Screen::Review => self.review_page.render(frame, self.review_view(), text),
+            Screen::Settings => self.settings_page.render(frame, text),
         }
     }
 
@@ -146,11 +161,13 @@ impl App {
             Screen::Home => self.handle_home_key(key),
             Screen::Results => self.handle_results_key(key),
             Screen::Review => self.handle_review_key(key),
+            Screen::Settings => self.handle_settings_key(key),
         }
     }
 
     pub fn tick(&mut self) {
         self.tick_review();
+        let text = self.text();
 
         let SearchState::Running { receiver, .. } = &self.search else {
             return;
@@ -165,11 +182,11 @@ impl App {
                 self.screen = Screen::Results;
             }
             Ok(Err(error)) => {
-                self.search = SearchState::Failed(messages().gmail_search_error(&error));
+                self.search = SearchState::Failed(text.gmail_search_error(&error));
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                self.search = SearchState::Failed(messages().gmail_search_stopped.to_string());
+                self.search = SearchState::Failed(text.gmail_search_stopped.to_string());
             }
         }
     }
@@ -181,6 +198,11 @@ impl App {
 
         match self.home_page.handle_key(key) {
             HomePageAction::Continue => AppAction::Continue,
+            HomePageAction::OpenSettings => {
+                self.settings_page.reset(&self.settings);
+                self.screen = Screen::Settings;
+                AppAction::Continue
+            }
             HomePageAction::Quit => AppAction::Quit,
             HomePageAction::Submit(input) => {
                 self.start_search(input);
@@ -235,11 +257,46 @@ impl App {
         AppAction::Continue
     }
 
+    fn handle_settings_key(&mut self, key: KeyEvent) -> AppAction {
+        match self.settings_page.handle_key(key) {
+            SettingsPageAction::Continue => AppAction::Continue,
+            SettingsPageAction::Back => {
+                self.screen = Screen::Home;
+                AppAction::Continue
+            }
+            SettingsPageAction::Quit => AppAction::Quit,
+            SettingsPageAction::Save(input) => {
+                self.save_settings_input(input);
+                AppAction::Continue
+            }
+        }
+    }
+
+    fn save_settings_input(&mut self, input: SettingsInput) {
+        let text = messages_for(input.language);
+        let settings = match settings_from_input(input, text) {
+            Ok(settings) => settings,
+            Err(message) => {
+                self.settings_page.mark_error(message);
+                return;
+            }
+        };
+
+        match save_settings(&settings) {
+            Ok(()) => {
+                self.settings = settings;
+                self.settings_page.reset(&self.settings);
+                self.settings_page.mark_saved();
+            }
+            Err(error) => self.settings_page.mark_error(error.to_string()),
+        }
+    }
+
     fn start_search(&mut self, input: SearchCriteriaInput) {
         let range = match DateRange::parse(&input.initial_date, &input.final_date) {
             Ok(range) => range,
             Err(error) => {
-                self.search = SearchState::Failed(messages().date_range_error(&error).to_string());
+                self.search = SearchState::Failed(self.text().date_range_error(&error).to_string());
                 return;
             }
         };
@@ -319,9 +376,10 @@ impl App {
         };
         let (sender, receiver) = mpsc::channel();
         let review_for_thread = review.clone();
+        let settings = self.settings.clone();
 
         thread::spawn(move || {
-            let _ = sender.send(save_invoice_review(review_for_thread));
+            let _ = sender.send(save_invoice_review(review_for_thread, settings));
         });
 
         self.review = ReviewState::Saving {
@@ -346,6 +404,7 @@ impl App {
     }
 
     fn tick_review(&mut self) {
+        let text = self.text();
         let next_state = match &self.review {
             ReviewState::Loading { context, receiver } => match receiver.try_recv() {
                 Ok(Ok(review)) => Some(ReviewState::Ready {
@@ -354,12 +413,12 @@ impl App {
                 }),
                 Ok(Err(error)) => Some(ReviewState::Error {
                     context: context.clone(),
-                    message: review_error_message(error),
+                    message: review_error_message(error, text),
                 }),
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => Some(ReviewState::Error {
                     context: context.clone(),
-                    message: messages().gmail_search_stopped.to_string(),
+                    message: text.gmail_search_stopped.to_string(),
                 }),
             },
             ReviewState::Saving {
@@ -375,12 +434,12 @@ impl App {
                 }
                 Ok(Err(error)) => Some(ReviewState::Error {
                     context: context.clone(),
-                    message: review_error_message(error),
+                    message: review_error_message(error, text),
                 }),
                 Err(TryRecvError::Empty) => None,
                 Err(TryRecvError::Disconnected) => Some(ReviewState::Error {
                     context: context.clone(),
-                    message: messages().gmail_search_stopped.to_string(),
+                    message: text.gmail_search_stopped.to_string(),
                 }),
             },
             _ => None,
@@ -435,6 +494,24 @@ impl App {
     }
 }
 
+fn settings_from_input(input: SettingsInput, text: &Messages) -> Result<AppSettings, String> {
+    let download_dir = input.download_dir.trim();
+    if download_dir.is_empty() {
+        return Err(text.settings_empty_download_dir.to_string());
+    }
+
+    let drive_root_folder = input.drive_root_folder.trim();
+    if drive_root_folder.is_empty() {
+        return Err(text.settings_empty_drive_root_folder.to_string());
+    }
+
+    Ok(AppSettings {
+        download_dir: PathBuf::from(download_dir),
+        drive_root_folder: drive_root_folder.to_string(),
+        language: input.language,
+    })
+}
+
 fn load_invoice_review(email: CandidateEmail) -> Result<InvoiceReview, ReviewError> {
     let service = GmailSearchService::default();
     let mut last_parse_error = None;
@@ -462,7 +539,10 @@ fn load_invoice_review(email: CandidateEmail) -> Result<InvoiceReview, ReviewErr
     }
 }
 
-fn save_invoice_review(review: InvoiceReview) -> Result<SavedInvoiceFiles, ReviewError> {
+fn save_invoice_review(
+    review: InvoiceReview,
+    settings: AppSettings,
+) -> Result<SavedInvoiceFiles, ReviewError> {
     let pdf_attachment = review
         .email
         .pdf_attachments
@@ -473,23 +553,28 @@ fn save_invoice_review(review: InvoiceReview) -> Result<SavedInvoiceFiles, Revie
         .download_attachment(&review.email.id, pdf_attachment)
         .map_err(ReviewError::Gmail)?;
 
-    let mut saved_files = save_invoice_files(&review.invoice, &review.json_file, &pdf_file)
-        .map_err(ReviewError::Io)?;
+    let mut saved_files = save_invoice_files(
+        &review.invoice,
+        &review.json_file,
+        &pdf_file,
+        &settings.download_dir,
+    )
+    .map_err(ReviewError::Io)?;
     let upload = DriveUploadService::default()
-        .upload_invoice_files(&review.invoice, &saved_files)
+        .upload_invoice_files(&review.invoice, &saved_files, &settings.drive_root_folder)
         .map_err(ReviewError::Drive)?;
     saved_files.drive_upload = Some(upload);
 
     Ok(saved_files)
 }
 
-fn review_error_message(error: ReviewError) -> String {
+fn review_error_message(error: ReviewError, text: &Messages) -> String {
     match error {
-        ReviewError::Gmail(error) => messages().gmail_search_error(&error),
-        ReviewError::Drive(error) => messages().drive_upload_error(&error),
-        ReviewError::Invoice(error) => format!("No se pudo leer el JSON de la factura: {error}"),
-        ReviewError::Io(error) => format!("No se pudieron guardar los archivos: {error}"),
-        ReviewError::MissingJson => "Este correo no tiene un adjunto JSON descargable.".to_string(),
-        ReviewError::MissingPdf => "Este correo no tiene un adjunto PDF descargable.".to_string(),
+        ReviewError::Gmail(error) => text.gmail_search_error(&error),
+        ReviewError::Drive(error) => text.drive_upload_error(&error),
+        ReviewError::Invoice(error) => format!("{}: {error}", text.invoice_json_error_prefix),
+        ReviewError::Io(error) => format!("{}: {error}", text.invoice_save_error_prefix),
+        ReviewError::MissingJson => text.missing_json_error.to_string(),
+        ReviewError::MissingPdf => text.missing_pdf_error.to_string(),
     }
 }

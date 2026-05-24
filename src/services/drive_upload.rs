@@ -7,7 +7,7 @@ use std::{
     process::Command,
 };
 
-const ROOT_FOLDER_NAME: &str = "CARLOS ROLANDO MORAN CAMPOS";
+pub const DEFAULT_ROOT_FOLDER_NAME: &str = "CARLOS ROLANDO MORAN CAMPOS";
 const PURCHASES_FOLDER_NAME: &str = "Compras";
 const FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
 
@@ -69,9 +69,10 @@ impl<R: CommandRunner> DriveUploadService<R> {
         &self,
         invoice: &InvoiceSummary,
         files: &SavedInvoiceFiles,
+        root_folder_name: &str,
     ) -> Result<UploadedInvoiceFiles, DriveUploadError> {
         let period = DrivePeriod::from_issue_date(&invoice.issue_date)?;
-        let root_id = self.find_or_create_folder(ROOT_FOLDER_NAME, "root")?;
+        let root_id = self.find_or_create_folder(root_folder_name, "root")?;
         let year_id = self.find_or_create_folder(&period.year, &root_id)?;
         let month_id = self.find_or_create_folder(&period.month_name, &year_id)?;
         let purchases_id = self.find_or_create_folder(PURCHASES_FOLDER_NAME, &month_id)?;
@@ -81,7 +82,7 @@ impl<R: CommandRunner> DriveUploadService<R> {
 
         Ok(UploadedInvoiceFiles {
             folder_path: format!(
-                "{ROOT_FOLDER_NAME}/{}/{}/{}",
+                "{root_folder_name}/{}/{}/{}",
                 period.year, period.month_name, PURCHASES_FOLDER_NAME
             ),
             folder_id: purchases_id,
@@ -388,7 +389,9 @@ mod tests {
             drive_upload: None,
         };
 
-        let upload = service.upload_invoice_files(&invoice, &files).unwrap();
+        let upload = service
+            .upload_invoice_files(&invoice, &files, DEFAULT_ROOT_FOLDER_NAME)
+            .unwrap();
 
         assert_eq!(
             upload.folder_path,

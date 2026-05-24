@@ -1,7 +1,4 @@
-use crate::{
-    components::loader::search_loader_widget,
-    i18n::{Messages, messages},
-};
+use crate::{components::loader::search_loader_widget, i18n::Messages};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
@@ -27,6 +24,7 @@ pub struct SearchCriteriaInput {
 
 pub enum HomePageAction {
     Continue,
+    OpenSettings,
     Quit,
     Submit(SearchCriteriaInput),
 }
@@ -42,8 +40,7 @@ pub enum HomePageStatus<'a> {
 }
 
 impl HomePage {
-    pub fn render(&self, frame: &mut Frame, status: HomePageStatus<'_>) {
-        let text = messages();
+    pub fn render(&self, frame: &mut Frame, status: HomePageStatus<'_>, text: &'static Messages) {
         let area = centered_rect(frame.area(), 96, 26);
         let block = Block::bordered()
             .title(format!(" {} ", text.app_title))
@@ -58,6 +55,7 @@ impl HomePage {
     pub fn handle_key(&mut self, key: KeyEvent) -> HomePageAction {
         match key.code {
             KeyCode::Char('q') => HomePageAction::Quit,
+            KeyCode::Char('s') | KeyCode::Char('S') => HomePageAction::OpenSettings,
             _ => self
                 .form
                 .handle_key(key)

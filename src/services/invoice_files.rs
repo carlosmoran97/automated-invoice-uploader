@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub const DOWNLOAD_DIR: &str = "downloaded_invoices";
+pub const DEFAULT_DOWNLOAD_DIR: &str = "downloaded_invoices";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SavedInvoiceFiles {
@@ -20,8 +20,8 @@ pub fn save_invoice_files(
     invoice: &InvoiceSummary,
     json: &DownloadedAttachment,
     pdf: &DownloadedAttachment,
+    directory: &Path,
 ) -> Result<SavedInvoiceFiles, io::Error> {
-    let directory = Path::new(DOWNLOAD_DIR);
     fs::create_dir_all(directory)?;
 
     let prefix = sanitize_filename(&invoice.file_slug());
