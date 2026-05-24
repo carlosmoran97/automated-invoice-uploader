@@ -23,6 +23,7 @@ pub enum ResultsPageAction {
     Continue,
     Back,
     Quit,
+    ReviewSelected,
 }
 
 impl ResultsPage {
@@ -61,6 +62,11 @@ impl ResultsPage {
         match key.code {
             KeyCode::Char('q') => return ResultsPageAction::Quit,
             KeyCode::Char('b') | KeyCode::Esc => return ResultsPageAction::Back,
+            KeyCode::Enter => {
+                if !self.selected_email_ids.is_empty() {
+                    return ResultsPageAction::ReviewSelected;
+                }
+            }
             KeyCode::Char(' ') => self.toggle_selected_email(emails),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection_up(emails.len()),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection_down(emails.len()),
@@ -227,6 +233,14 @@ impl ResultsPage {
 
     fn is_email_selected(&self, email: &CandidateEmail) -> bool {
         self.selected_email_ids.contains(&email.id)
+    }
+
+    pub fn selected_emails(&self, emails: &[CandidateEmail]) -> Vec<CandidateEmail> {
+        emails
+            .iter()
+            .filter(|email| self.is_email_selected(email))
+            .cloned()
+            .collect()
     }
 }
 

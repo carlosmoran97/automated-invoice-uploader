@@ -1,4 +1,8 @@
 use crate::domain::date_range::DateRange;
+use base64::{
+    Engine,
+    engine::general_purpose::{URL_SAFE, URL_SAFE_NO_PAD},
+};
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::HashSet, fmt, io, process::Command};
@@ -26,6 +30,12 @@ pub struct AttachmentSummary {
     pub size: Option<u64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadedAttachment {
+    pub filename: String,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Debug)]
 pub enum GmailSearchError {
     CliNotFound,
@@ -42,6 +52,16 @@ pub enum GmailSearchError {
     PageLimitReached {
         query: String,
         page_limit: usize,
+    },
+    AttachmentNotDownloadable {
+        filename: String,
+    },
+    AttachmentMissingData {
+        filename: String,
+    },
+    Base64 {
+        filename: String,
+        source: base64::DecodeError,
     },
 }
 
@@ -90,6 +110,46 @@ impl<R: CommandRunner> GmailSearchService<R> {
         candidates.sort_by(|left, right| right.internal_date_ms.cmp(&left.internal_date_ms));
 
         Ok(candidates)
+    }
+
+    pub fn download_attachment(
+        &self,
+        message_id: &str,
+        attachment: &AttachmentSummary,
+    ) -> Result<DownloadedAttachment, GmailSearchError> {
+        let attachment_id = attachment.attachment_id.as_deref().ok_or_else(|| {
+            GmailSearchError::AttachmentNotDownloadable {
+                filename: attachment.filename.clone(),
+            }
+        })?;
+        let params = json!({
+            "userId": "me",
+            "messageId": message_id,
+            "id": attachment_id,
+        })
+        .to_string();
+        let args = vec![
+            "gmail".to_string(),
+            "users".to_string(),
+            "messages".to_string(),
+            "attachments".to_string(),
+            "get".to_string(),
+            "--params".to_string(),
+            params,
+        ];
+        let stdout = self.runner.run(&args)?;
+        let body: MessagePartBody =
+            parse_json(&stdout, format!("attachment {}", attachment.filename))?;
+        let data = body
+            .data
+            .ok_or_else(|| GmailSearchError::AttachmentMissingData {
+                filename: attachment.filename.clone(),
+            })?;
+
+        Ok(DownloadedAttachment {
+            filename: attachment.filename.clone(),
+            bytes: decode_base64_url(&attachment.filename, &data)?,
+        })
     }
 
     fn list_message_ids(&self, query: &str) -> Result<Vec<String>, GmailSearchError> {
@@ -205,6 +265,21 @@ impl fmt::Display for GmailSearchError {
                 formatter,
                 "Gmail search reached the {page_limit}-page limit for query `{query}`. Narrow the date range and try again."
             ),
+            Self::AttachmentNotDownloadable { filename } => {
+                write!(formatter, "Attachment `{filename}` is not downloadable.")
+            }
+            Self::AttachmentMissingData { filename } => {
+                write!(
+                    formatter,
+                    "Attachment `{filename}` did not include downloadable data."
+                )
+            }
+            Self::Base64 { filename, source } => {
+                write!(
+                    formatter,
+                    "Failed to decode attachment `{filename}`: {source}"
+                )
+            }
         }
     }
 }
@@ -263,6 +338,8 @@ struct MessagePartBody {
     attachment_id: Option<String>,
     #[serde(default)]
     size: Option<u64>,
+    #[serde(default)]
+    data: Option<String>,
 }
 
 struct ListOutput {
@@ -331,6 +408,16 @@ where
     T: for<'de> Deserialize<'de>,
 {
     serde_json::from_str(input).map_err(|source| GmailSearchError::Json { context, source })
+}
+
+fn decode_base64_url(filename: &str, data: &str) -> Result<Vec<u8>, GmailSearchError> {
+    URL_SAFE_NO_PAD
+        .decode(data)
+        .or_else(|_| URL_SAFE.decode(data))
+        .map_err(|source| GmailSearchError::Base64 {
+            filename: filename.to_string(),
+            source,
+        })
 }
 
 fn intersect_ids(pdf_message_ids: &[String], json_message_ids: &[String]) -> Vec<String> {
@@ -555,6 +642,25 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].id, "both");
         assert_eq!(calls.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn downloads_attachment_data() {
+        let runner = FakeRunner::new(vec![r#"{"data":"SGVsbG8"}"#]);
+        let service = GmailSearchService::new(runner);
+        let attachment = AttachmentSummary {
+            filename: "invoice.json".to_string(),
+            attachment_id: Some("attachment-id".to_string()),
+            mime_type: "application/json".to_string(),
+            size: Some(5),
+        };
+
+        let downloaded = service
+            .download_attachment("message-id", &attachment)
+            .unwrap();
+
+        assert_eq!(downloaded.filename, "invoice.json");
+        assert_eq!(downloaded.bytes, b"Hello");
     }
 
     struct FakeRunner {

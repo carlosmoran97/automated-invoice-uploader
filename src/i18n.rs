@@ -52,6 +52,39 @@ pub struct Messages {
     pub unknown_date: &'static str,
     pub no_snippet: &'static str,
     pub gmail_search_stopped: &'static str,
+    pub review_title: &'static str,
+    pub loading_invoice: &'static str,
+    pub saving_invoice_files: &'static str,
+    pub review_complete: &'static str,
+    pub review_error_title: &'static str,
+    pub review_prompt: &'static str,
+    pub review_busy_footer: &'static str,
+    pub review_ready_footer: &'static str,
+    pub review_error_footer: &'static str,
+    pub review_complete_footer: &'static str,
+    pub document_type_label: &'static str,
+    pub ccf_warning: &'static str,
+    pub control_number_label: &'static str,
+    pub generation_code_label: &'static str,
+    pub issue_date_label: &'static str,
+    pub issuer_label: &'static str,
+    pub receiver_label: &'static str,
+    pub totals_label: &'static str,
+    pub taxed_sales_label: &'static str,
+    pub exempt_sales_label: &'static str,
+    pub non_subject_sales_label: &'static str,
+    pub subtotal_label: &'static str,
+    pub operation_total_label: &'static str,
+    pub total_to_pay_label: &'static str,
+    pub payment_condition_label: &'static str,
+    pub taxes_label: &'static str,
+    pub line_items_label: &'static str,
+    pub saved_files_label: &'static str,
+    pub processed_label: &'static str,
+    pub skipped_label: &'static str,
+    pub unit_price_label: &'static str,
+    pub taxed_short_label: &'static str,
+    pub exempt_short_label: &'static str,
 }
 
 impl Messages {
@@ -78,6 +111,13 @@ impl Messages {
             Language::Spanish => format!("{count} correos seleccionados."),
             Language::English if count == 1 => format!("{count} email selected."),
             Language::English => format!("{count} emails selected."),
+        }
+    }
+
+    pub fn review_progress(&self, index: usize, total: usize) -> String {
+        match self.language {
+            Language::Spanish => format!("Correo {} de {total}", index + 1),
+            Language::English => format!("Email {} of {total}", index + 1),
         }
     }
 
@@ -139,12 +179,45 @@ static SPANISH: Messages = Messages {
     pdf_label: "PDF: ",
     json_label: "JSON: ",
     snippet_label: "Resumen: ",
-    results_footer: "Arriba/Abajo: mover  Espacio: seleccionar/quitar  b/Esc: volver  q: salir",
+    results_footer: "Arriba/Abajo: mover  Espacio: seleccionar/quitar  Enter: revisar  b/Esc: volver  q: salir",
     unknown_sender: "(remitente desconocido)",
     no_subject: "(sin asunto)",
     unknown_date: "(fecha desconocida)",
     no_snippet: "(sin resumen)",
     gmail_search_stopped: "La busqueda de Gmail se detuvo inesperadamente.",
+    review_title: "Revision de facturas",
+    loading_invoice: "Descargando JSON de la factura...",
+    saving_invoice_files: "Descargando PDF y guardando archivos...",
+    review_complete: "Revision completada.",
+    review_error_title: "No se pudo revisar este correo",
+    review_prompt: "Procesar este correo? Y/n",
+    review_busy_footer: "q: salir",
+    review_ready_footer: "Y: procesar y descargar PDF  n: omitir  q: salir",
+    review_error_footer: "n: omitir  q: salir",
+    review_complete_footer: "Enter/Esc: volver a resultados  q: salir",
+    document_type_label: "Tipo de documento",
+    ccf_warning: "Este JSON no parece ser CCF (tipoDte 03).",
+    control_number_label: "Numero de control",
+    generation_code_label: "Codigo de generacion",
+    issue_date_label: "Fecha de emision",
+    issuer_label: "Emisor",
+    receiver_label: "Receptor",
+    totals_label: "Montos",
+    taxed_sales_label: "Ventas gravadas",
+    exempt_sales_label: "Ventas exentas",
+    non_subject_sales_label: "Ventas no sujetas",
+    subtotal_label: "Subtotal",
+    operation_total_label: "Total operacion",
+    total_to_pay_label: "Total a pagar",
+    payment_condition_label: "Condicion",
+    taxes_label: "Tributos",
+    line_items_label: "Lineas",
+    saved_files_label: "Archivos guardados",
+    processed_label: "Procesados",
+    skipped_label: "Omitidos",
+    unit_price_label: "Unitario",
+    taxed_short_label: "Gravada",
+    exempt_short_label: "Exenta",
 };
 
 static ENGLISH: Messages = Messages {
@@ -174,12 +247,45 @@ static ENGLISH: Messages = Messages {
     pdf_label: "PDF: ",
     json_label: "JSON: ",
     snippet_label: "Snippet: ",
-    results_footer: "Up/Down: move  Space: select/unselect  b/Esc: back  q: quit",
+    results_footer: "Up/Down: move  Space: select/unselect  Enter: review  b/Esc: back  q: quit",
     unknown_sender: "(unknown sender)",
     no_subject: "(no subject)",
     unknown_date: "(unknown date)",
     no_snippet: "(no snippet)",
     gmail_search_stopped: "Gmail search stopped unexpectedly.",
+    review_title: "Invoice review",
+    loading_invoice: "Downloading invoice JSON...",
+    saving_invoice_files: "Downloading PDF and saving files...",
+    review_complete: "Review complete.",
+    review_error_title: "Could not review this email",
+    review_prompt: "Process this email? Y/n",
+    review_busy_footer: "q: quit",
+    review_ready_footer: "Y: process and download PDF  n: skip  q: quit",
+    review_error_footer: "n: skip  q: quit",
+    review_complete_footer: "Enter/Esc: back to results  q: quit",
+    document_type_label: "Document type",
+    ccf_warning: "This JSON does not look like CCF (tipoDte 03).",
+    control_number_label: "Control number",
+    generation_code_label: "Generation code",
+    issue_date_label: "Issue date",
+    issuer_label: "Issuer",
+    receiver_label: "Receiver",
+    totals_label: "Amounts",
+    taxed_sales_label: "Taxed sales",
+    exempt_sales_label: "Exempt sales",
+    non_subject_sales_label: "Non-subject sales",
+    subtotal_label: "Subtotal",
+    operation_total_label: "Operation total",
+    total_to_pay_label: "Total to pay",
+    payment_condition_label: "Condition",
+    taxes_label: "Taxes",
+    line_items_label: "Line items",
+    saved_files_label: "Saved files",
+    processed_label: "Processed",
+    skipped_label: "Skipped",
+    unit_price_label: "Unit",
+    taxed_short_label: "Taxed",
+    exempt_short_label: "Exempt",
 };
 
 fn gmail_search_error_es(error: &GmailSearchError) -> String {
@@ -206,6 +312,15 @@ fn gmail_search_error_es(error: &GmailSearchError) -> String {
         GmailSearchError::PageLimitReached { query, page_limit } => format!(
             "La busqueda llego al limite de {page_limit} paginas para `{query}`. Reduce el rango de fechas e intenta otra vez."
         ),
+        GmailSearchError::AttachmentNotDownloadable { filename } => {
+            format!("El adjunto `{filename}` no se puede descargar.")
+        }
+        GmailSearchError::AttachmentMissingData { filename } => {
+            format!("El adjunto `{filename}` no incluyo datos descargables.")
+        }
+        GmailSearchError::Base64 { filename, source } => {
+            format!("No se pudo decodificar el adjunto `{filename}`: {source}")
+        }
     }
 }
 
@@ -233,6 +348,15 @@ fn gmail_search_error_en(error: &GmailSearchError) -> String {
         GmailSearchError::PageLimitReached { query, page_limit } => format!(
             "Gmail search reached the {page_limit}-page limit for query `{query}`. Narrow the date range and try again."
         ),
+        GmailSearchError::AttachmentNotDownloadable { filename } => {
+            format!("Attachment `{filename}` is not downloadable.")
+        }
+        GmailSearchError::AttachmentMissingData { filename } => {
+            format!("Attachment `{filename}` did not include downloadable data.")
+        }
+        GmailSearchError::Base64 { filename, source } => {
+            format!("Failed to decode attachment `{filename}`: {source}")
+        }
     }
 }
 
