@@ -1,10 +1,13 @@
-use crate::i18n::{Messages, messages};
+use crate::{
+    components::loader::search_loader_widget,
+    i18n::{Messages, messages},
+};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::Line,
     widgets::{
         Block, BorderType, Borders, Clear, Paragraph,
         calendar::{CalendarEventStore, Monthly},
@@ -33,6 +36,7 @@ pub enum HomePageStatus<'a> {
     Searching {
         initial_date: &'a str,
         final_date: &'a str,
+        frame: usize,
     },
     Error(&'a str),
 }
@@ -253,21 +257,8 @@ impl SearchCriteriaForm {
             HomePageStatus::Searching {
                 initial_date,
                 final_date,
-            } => Paragraph::new(vec![
-                Line::from(text.searching_gmail).style(
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Line::from(vec![
-                    Span::raw(format!("{}: ", text.initial_date)),
-                    Span::styled(initial_date, Style::default().fg(Color::Cyan)),
-                ]),
-                Line::from(vec![
-                    Span::raw(format!("{}: ", text.final_date)),
-                    Span::styled(final_date, Style::default().fg(Color::Green)),
-                ]),
-            ]),
+                frame,
+            } => search_loader_widget(frame, initial_date, final_date, text),
             HomePageStatus::Error(error) => {
                 Paragraph::new(error).style(Style::default().fg(Color::Red))
             }

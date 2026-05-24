@@ -34,6 +34,7 @@ pub struct App {
     search: SearchState,
     review: ReviewState,
     results: Vec<CandidateEmail>,
+    search_frame: usize,
 }
 
 pub enum AppAction {
@@ -119,6 +120,7 @@ impl Default for App {
             search: SearchState::Idle,
             review: ReviewState::Idle,
             results: Vec::new(),
+            search_frame: 0,
         }
     }
 }
@@ -153,6 +155,7 @@ impl App {
         let SearchState::Running { receiver, .. } = &self.search else {
             return;
         };
+        self.search_frame = self.search_frame.wrapping_add(1);
 
         match receiver.try_recv() {
             Ok(Ok(results)) => {
@@ -243,6 +246,7 @@ impl App {
         let (sender, receiver) = mpsc::channel();
         let initial_date = range.initial_date();
         let final_date = range.final_date();
+        self.search_frame = 0;
 
         thread::spawn(move || {
             let service = GmailSearchService::default();
@@ -267,6 +271,7 @@ impl App {
             } => HomePageStatus::Searching {
                 initial_date,
                 final_date,
+                frame: self.search_frame,
             },
             SearchState::Failed(error) => HomePageStatus::Error(error),
         }
