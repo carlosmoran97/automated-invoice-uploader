@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
 };
 use std::collections::HashSet;
 
@@ -16,6 +16,7 @@ use std::collections::HashSet;
 pub struct ResultsPage {
     selected: usize,
     scroll_offset: usize,
+    details_scroll: u16,
     selected_email_ids: HashSet<String>,
 }
 
@@ -30,12 +31,13 @@ impl ResultsPage {
     pub fn reset(&mut self, emails: &[CandidateEmail]) {
         self.selected = 0;
         self.scroll_offset = 0;
+        self.details_scroll = 0;
         self.selected_email_ids = emails.iter().map(|email| email.id.clone()).collect();
     }
 
     pub fn render(&self, frame: &mut Frame, emails: &[CandidateEmail]) {
         let text = messages();
-        let area = centered_rect(frame.area(), 100, 30);
+        let area = centered_rect(frame.area(), 112, 38);
         let block = Block::bordered()
             .title(format!(" {} ", text.results_title))
             .title_alignment(Alignment::Center)
@@ -45,8 +47,8 @@ impl ResultsPage {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
-                Constraint::Min(6),
-                Constraint::Length(7),
+                Constraint::Percentage(45),
+                Constraint::Min(10),
                 Constraint::Length(1),
             ])
             .split(inner);
@@ -70,6 +72,8 @@ impl ResultsPage {
             KeyCode::Char(' ') => self.toggle_selected_email(emails),
             KeyCode::Up | KeyCode::Char('k') => self.move_selection_up(emails.len()),
             KeyCode::Down | KeyCode::Char('j') => self.move_selection_down(emails.len()),
+            KeyCode::PageUp => self.scroll_details_up(),
+            KeyCode::PageDown => self.scroll_details_down(),
             _ => {}
         }
 
@@ -146,9 +150,11 @@ impl ResultsPage {
             .borders(Borders::ALL)
             .title(format!(" {} ", text.selected_email_title))
             .border_style(Style::default().fg(Color::DarkGray));
+        let inner = block.inner(area);
         let lines = emails.get(self.selected).map_or_else(
             || vec![Line::from(text.no_email_selected)],
             |email| {
+                let message_text = email_message_text(email, text);
                 vec![
                     Line::from(vec![
                         Span::styled(
@@ -178,18 +184,40 @@ impl ResultsPage {
                         ),
                         Span::raw(attachment_names(&email.json_attachments)),
                     ]),
+                    Line::from(""),
+                    Line::from(vec![Span::styled(
+                        text.snippet_label,
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )]),
+                    Line::from(message_text),
+                    Line::from(""),
                     Line::from(vec![
                         Span::styled(
-                            text.snippet_label,
-                            Style::default().add_modifier(Modifier::BOLD),
+                            "Scroll: ",
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::BOLD),
                         ),
-                        Span::raw(truncate(display_or(&email.snippet, text.no_snippet), 86)),
+                        Span::styled("PgUp/PgDn", Style::default().fg(Color::DarkGray)),
                     ]),
                 ]
             },
         );
+        let scroll = emails
+            .get(self.selected)
+            .map(|email| {
+                self.details_scroll
+                    .min(max_details_scroll(email, text, inner))
+            })
+            .unwrap_or_default();
 
-        frame.render_widget(Paragraph::new(lines).block(block), area);
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(block)
+                .wrap(Wrap { trim: false })
+                .scroll((scroll, 0)),
+            area,
+        );
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect, text: &Messages) {
@@ -208,6 +236,7 @@ impl ResultsPage {
         if self.selected < self.scroll_offset {
             self.scroll_offset = self.selected;
         }
+        self.details_scroll = 0;
     }
 
     fn move_selection_down(&mut self, email_count: usize) {
@@ -219,6 +248,7 @@ impl ResultsPage {
         if self.selected >= self.scroll_offset + 1 {
             self.scroll_offset = self.selected.saturating_sub(1);
         }
+        self.details_scroll = 0;
     }
 
     fn toggle_selected_email(&mut self, emails: &[CandidateEmail]) {
@@ -229,6 +259,14 @@ impl ResultsPage {
         if !self.selected_email_ids.remove(&email.id) {
             self.selected_email_ids.insert(email.id.clone());
         }
+    }
+
+    fn scroll_details_up(&mut self) {
+        self.details_scroll = self.details_scroll.saturating_sub(5);
+    }
+
+    fn scroll_details_down(&mut self) {
+        self.details_scroll = self.details_scroll.saturating_add(5);
     }
 
     fn is_email_selected(&self, email: &CandidateEmail) -> bool {
@@ -301,6 +339,60 @@ fn display_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
     } else {
         value
     }
+}
+
+fn email_message_text<'a>(email: &'a CandidateEmail, text: &'a Messages) -> &'a str {
+    display_or(&email.snippet, text.no_snippet)
+}
+
+fn max_details_scroll(email: &CandidateEmail, text: &Messages, area: Rect) -> u16 {
+    let width = area.width.max(1) as usize;
+    let visible_rows = area.height as usize;
+    let content_rows = [
+        format!(
+            "{}{}",
+            text.from_label,
+            display_or(&email.from, text.unknown_sender)
+        ),
+        format!(
+            "{}{}",
+            text.subject_label,
+            display_or(&email.subject, text.no_subject)
+        ),
+        format!(
+            "{}{}",
+            text.pdf_label,
+            attachment_names(&email.pdf_attachments)
+        ),
+        format!(
+            "{}{}",
+            text.json_label,
+            attachment_names(&email.json_attachments)
+        ),
+        String::new(),
+        text.snippet_label.to_string(),
+        email_message_text(email, text).to_string(),
+        String::new(),
+        "Scroll: PgUp/PgDn".to_string(),
+    ]
+    .iter()
+    .map(|line| wrapped_line_count(line, width))
+    .sum::<usize>();
+
+    content_rows
+        .saturating_sub(visible_rows)
+        .min(u16::MAX as usize) as u16
+}
+
+fn wrapped_line_count(value: &str, width: usize) -> usize {
+    if value.is_empty() {
+        return 1;
+    }
+
+    value
+        .lines()
+        .map(|line| (line.chars().count().max(1) + width - 1) / width)
+        .sum()
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {
