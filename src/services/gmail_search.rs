@@ -8,6 +8,7 @@ use serde_json::json;
 use std::{collections::HashSet, fmt, io, process::Command};
 
 const PAGE_LIMIT: usize = 1000;
+const CREDIT_FISCAL_QUERY_TERM: &str = "DTE-03";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CandidateEmail {
@@ -349,10 +350,11 @@ struct ListOutput {
 
 fn build_attachment_query(range: &DateRange, extension: &str) -> String {
     format!(
-        "after:{} before:{} filename:{}",
+        "after:{} before:{} filename:{} {}",
         range.gmail_after_date(),
         range.gmail_before_date(),
-        extension
+        extension,
+        CREDIT_FISCAL_QUERY_TERM
     )
 }
 
@@ -534,12 +536,12 @@ mod tests {
     };
 
     #[test]
-    fn builds_gmail_attachment_query_with_inclusive_final_date() {
+    fn builds_gmail_attachment_query_with_credito_fiscal_filter() {
         let range = DateRange::parse("2026-05-01", "2026-05-31").unwrap();
 
         assert_eq!(
             build_attachment_query(&range, "pdf"),
-            "after:2026/05/01 before:2026/06/01 filename:pdf"
+            "after:2026/05/01 before:2026/06/01 filename:pdf DTE-03"
         );
     }
 
