@@ -49,9 +49,11 @@ pub enum AppAction {
 impl Default for App {
     fn default() -> Self {
         let settings = load_settings().unwrap_or_default();
+        let home_page =
+            HomePage::default().with_dte_query_filter(settings.dte_query_filter.clone());
         Self {
             screen: Screen::Home,
-            home_page: HomePage::default(),
+            home_page,
             results_page: ResultsPage::default(),
             review_page: ReviewPage,
             settings_page: SettingsPage::default(),
@@ -213,6 +215,8 @@ impl App {
         };
 
         self.settings = settings;
+        self.home_page
+            .set_dte_query_filter(self.settings.dte_query_filter.clone());
         self.settings_page.reset(&self.settings);
         self.settings_page.mark_saved();
     }
@@ -228,10 +232,11 @@ impl App {
         let (sender, receiver) = mpsc::channel();
         let initial_date = range.initial_date();
         let final_date = range.final_date();
+        let dte_query_filter = input.dte_query_filter.trim().to_string();
         self.search_frame = 0;
 
         thread::spawn(move || {
-            let service = GmailSearchService::default();
+            let service = GmailSearchService::default().with_dte_query_filter(dte_query_filter);
             let result = service.search_invoice_candidates(&range);
             let _ = sender.send(result);
         });

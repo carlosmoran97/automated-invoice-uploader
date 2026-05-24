@@ -29,6 +29,7 @@ fn settings_from_input(input: SettingsInput, text: &Messages) -> Result<AppSetti
     Ok(AppSettings {
         download_dir: PathBuf::from(download_dir),
         drive_root_folder: drive_root_folder.to_string(),
+        dte_query_filter: input.dte_query_filter.trim().to_string(),
         language: input.language,
     })
 }

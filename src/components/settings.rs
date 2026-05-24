@@ -16,6 +16,7 @@ pub struct SettingsPage {
     focused_field: SettingsField,
     download_dir: String,
     drive_root_folder: String,
+    dte_query_filter: String,
     language: Language,
     status: Option<SettingsStatus>,
 }
@@ -23,6 +24,7 @@ pub struct SettingsPage {
 pub struct SettingsInput {
     pub download_dir: String,
     pub drive_root_folder: String,
+    pub dte_query_filter: String,
     pub language: Language,
 }
 
@@ -43,6 +45,7 @@ enum SettingsField {
     #[default]
     DownloadDir,
     DriveRootFolder,
+    DteQueryFilter,
     Language,
 }
 
@@ -51,6 +54,7 @@ impl SettingsPage {
         self.focused_field = SettingsField::DownloadDir;
         self.download_dir = settings.download_dir.display().to_string();
         self.drive_root_folder = settings.drive_root_folder.clone();
+        self.dte_query_filter = settings.dte_query_filter.clone();
         self.language = settings.language;
         self.status = None;
     }
@@ -64,7 +68,7 @@ impl SettingsPage {
     }
 
     pub fn render(&self, frame: &mut Frame, text: &'static Messages) {
-        let area = centered_rect(frame.area(), 104, 24);
+        let area = centered_rect(frame.area(), 104, 26);
         let block = Block::bordered()
             .title(format!(" {} ", text.settings_title))
             .title_alignment(Alignment::Center)
@@ -74,6 +78,7 @@ impl SettingsPage {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
+                Constraint::Length(4),
                 Constraint::Length(4),
                 Constraint::Length(4),
                 Constraint::Length(4),
@@ -105,11 +110,18 @@ impl SettingsPage {
             &self.drive_root_folder,
             SettingsField::DriveRootFolder,
         );
-        self.render_language(frame, chunks[3], text);
-        self.render_status(frame, chunks[4], text);
+        self.render_input(
+            frame,
+            chunks[3],
+            text.dte_query_filter_label,
+            &self.dte_query_filter,
+            SettingsField::DteQueryFilter,
+        );
+        self.render_language(frame, chunks[4], text);
+        self.render_status(frame, chunks[5], text);
         frame.render_widget(
             Paragraph::new(text.settings_footer).style(Style::default().fg(Color::DarkGray)),
-            chunks[5],
+            chunks[6],
         );
     }
 
@@ -122,6 +134,7 @@ impl SettingsPage {
             KeyCode::Enter => SettingsPageAction::Save(SettingsInput {
                 download_dir: self.download_dir.clone(),
                 drive_root_folder: self.drive_root_folder.clone(),
+                dte_query_filter: self.dte_query_filter.clone(),
                 language: self.language,
             }),
             KeyCode::Tab => {
@@ -209,7 +222,8 @@ impl SettingsPage {
     fn focus_next(&mut self) {
         self.focused_field = match self.focused_field {
             SettingsField::DownloadDir => SettingsField::DriveRootFolder,
-            SettingsField::DriveRootFolder => SettingsField::Language,
+            SettingsField::DriveRootFolder => SettingsField::DteQueryFilter,
+            SettingsField::DteQueryFilter => SettingsField::Language,
             SettingsField::Language => SettingsField::DownloadDir,
         };
     }
@@ -218,7 +232,8 @@ impl SettingsPage {
         self.focused_field = match self.focused_field {
             SettingsField::DownloadDir => SettingsField::Language,
             SettingsField::DriveRootFolder => SettingsField::DownloadDir,
-            SettingsField::Language => SettingsField::DriveRootFolder,
+            SettingsField::DteQueryFilter => SettingsField::DriveRootFolder,
+            SettingsField::Language => SettingsField::DteQueryFilter,
         };
     }
 
@@ -231,6 +246,10 @@ impl SettingsPage {
             SettingsField::DriveRootFolder => {
                 self.status = None;
                 self.drive_root_folder.push(character);
+            }
+            SettingsField::DteQueryFilter => {
+                self.status = None;
+                self.dte_query_filter.push(character);
             }
             SettingsField::Language => {}
         }
@@ -245,6 +264,10 @@ impl SettingsPage {
             SettingsField::DriveRootFolder => {
                 self.status = None;
                 self.drive_root_folder.pop();
+            }
+            SettingsField::DteQueryFilter => {
+                self.status = None;
+                self.dte_query_filter.pop();
             }
             SettingsField::Language => {}
         }

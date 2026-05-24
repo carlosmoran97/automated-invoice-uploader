@@ -8,7 +8,7 @@ use serde_json::json;
 use std::{collections::HashSet, fmt, io, process::Command};
 
 const PAGE_LIMIT: usize = 1000;
-const CREDIT_FISCAL_QUERY_TERM: &str = "DTE-03";
+pub const DEFAULT_DTE_QUERY_FILTER: &str = "DTE-03";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CandidateEmail {
@@ -75,12 +75,14 @@ pub struct SystemCommandRunner;
 
 pub struct GmailSearchService<R = SystemCommandRunner> {
     runner: R,
+    dte_query_filter: String,
 }
 
 impl Default for GmailSearchService<SystemCommandRunner> {
     fn default() -> Self {
         Self {
             runner: SystemCommandRunner,
+            dte_query_filter: DEFAULT_DTE_QUERY_FILTER.to_string(),
         }
     }
 }
@@ -88,15 +90,23 @@ impl Default for GmailSearchService<SystemCommandRunner> {
 impl<R: CommandRunner> GmailSearchService<R> {
     #[cfg(test)]
     pub fn new(runner: R) -> Self {
-        Self { runner }
+        Self {
+            runner,
+            dte_query_filter: DEFAULT_DTE_QUERY_FILTER.to_string(),
+        }
+    }
+
+    pub fn with_dte_query_filter(mut self, dte_query_filter: impl Into<String>) -> Self {
+        self.dte_query_filter = dte_query_filter.into();
+        self
     }
 
     pub fn search_invoice_candidates(
         &self,
         range: &DateRange,
     ) -> Result<Vec<CandidateEmail>, GmailSearchError> {
-        let pdf_query = build_attachment_query(range, "pdf");
-        let json_query = build_attachment_query(range, "json");
+        let pdf_query = build_attachment_query(range, "pdf", &self.dte_query_filter);
+        let json_query = build_attachment_query(range, "json", &self.dte_query_filter);
         let pdf_message_ids = self.list_message_ids(&pdf_query)?;
         let json_message_ids = self.list_message_ids(&json_query)?;
         let intersected_ids = intersect_ids(&pdf_message_ids, &json_message_ids);
@@ -348,14 +358,21 @@ struct ListOutput {
     hit_page_limit: bool,
 }
 
-fn build_attachment_query(range: &DateRange, extension: &str) -> String {
-    format!(
-        "after:{} before:{} filename:{} {}",
+fn build_attachment_query(range: &DateRange, extension: &str, dte_query_filter: &str) -> String {
+    let mut query = format!(
+        "after:{} before:{} filename:{}",
         range.gmail_after_date(),
         range.gmail_before_date(),
-        extension,
-        CREDIT_FISCAL_QUERY_TERM
-    )
+        extension
+    );
+    let dte_query_filter = dte_query_filter.trim();
+
+    if !dte_query_filter.is_empty() {
+        query.push(' ');
+        query.push_str(dte_query_filter);
+    }
+
+    query
 }
 
 fn parse_list_output(stdout: &str, query: &str) -> Result<ListOutput, GmailSearchError> {
@@ -540,8 +557,18 @@ mod tests {
         let range = DateRange::parse("2026-05-01", "2026-05-31").unwrap();
 
         assert_eq!(
-            build_attachment_query(&range, "pdf"),
+            build_attachment_query(&range, "pdf", DEFAULT_DTE_QUERY_FILTER),
             "after:2026/05/01 before:2026/06/01 filename:pdf DTE-03"
+        );
+    }
+
+    #[test]
+    fn omits_credito_fiscal_filter_when_empty() {
+        let range = DateRange::parse("2026-05-01", "2026-05-31").unwrap();
+
+        assert_eq!(
+            build_attachment_query(&range, "json", " "),
+            "after:2026/05/01 before:2026/06/01 filename:json"
         );
     }
 
@@ -644,6 +671,47 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].id, "both");
         assert_eq!(calls.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn search_uses_configured_dte_query_filter() {
+        let runner = FakeRunner::new(vec![
+            r#"{"messages":[{"id":"both"}]}"#,
+            r#"{"messages":[{"id":"both"}]}"#,
+            r#"{
+                "id": "both",
+                "threadId": "thread",
+                "internalDate": "1770000000000",
+                "payload": {
+                    "headers": [
+                        {"name": "From", "value": "Vendor <vendor@example.com>"},
+                        {"name": "Subject", "value": "Invoice"}
+                    ],
+                    "parts": [
+                        {
+                            "filename": "invoice.pdf",
+                            "mimeType": "application/pdf",
+                            "body": {"attachmentId": "pdf-id"}
+                        },
+                        {
+                            "filename": "invoice.json",
+                            "mimeType": "application/json",
+                            "body": {"attachmentId": "json-id"}
+                        }
+                    ]
+                }
+            }"#,
+        ]);
+        let calls = runner.calls.clone();
+        let service = GmailSearchService::new(runner).with_dte_query_filter("custom-filter");
+        let range = DateRange::parse("2026-05-01", "2026-05-31").unwrap();
+
+        let candidates = service.search_invoice_candidates(&range).unwrap();
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert!(calls[0][5].contains("custom-filter"));
+        assert!(calls[1][5].contains("custom-filter"));
     }
 
     #[test]

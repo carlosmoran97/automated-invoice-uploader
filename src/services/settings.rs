@@ -1,6 +1,9 @@
 use crate::{
     i18n::{DEFAULT_LANGUAGE, Language},
-    services::{drive_upload::DEFAULT_ROOT_FOLDER_NAME, invoice_files::DEFAULT_DOWNLOAD_DIR},
+    services::{
+        drive_upload::DEFAULT_ROOT_FOLDER_NAME, gmail_search::DEFAULT_DTE_QUERY_FILTER,
+        invoice_files::DEFAULT_DOWNLOAD_DIR,
+    },
 };
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
@@ -15,6 +18,8 @@ const SETTINGS_FILE: &str = "settings.json";
 pub struct AppSettings {
     pub download_dir: PathBuf,
     pub drive_root_folder: String,
+    #[serde(default = "default_dte_query_filter")]
+    pub dte_query_filter: String,
     pub language: Language,
 }
 
@@ -30,9 +35,14 @@ impl Default for AppSettings {
         Self {
             download_dir: PathBuf::from(DEFAULT_DOWNLOAD_DIR),
             drive_root_folder: DEFAULT_ROOT_FOLDER_NAME.to_string(),
+            dte_query_filter: DEFAULT_DTE_QUERY_FILTER.to_string(),
             language: DEFAULT_LANGUAGE,
         }
     }
+}
+
+fn default_dte_query_filter() -> String {
+    DEFAULT_DTE_QUERY_FILTER.to_string()
 }
 
 pub fn load_settings() -> Result<AppSettings, SettingsError> {
@@ -94,6 +104,7 @@ mod tests {
 
         assert_eq!(settings.download_dir, PathBuf::from("downloaded_invoices"));
         assert_eq!(settings.drive_root_folder, "CARLOS ROLANDO MORAN CAMPOS");
+        assert_eq!(settings.dte_query_filter, "DTE-03");
         assert_eq!(settings.language, Language::Spanish);
     }
 
@@ -107,5 +118,19 @@ mod tests {
         let json = serde_json::to_string(&settings).unwrap();
 
         assert!(json.contains(r#""language":"en""#));
+    }
+
+    #[test]
+    fn missing_dte_query_filter_uses_default() {
+        let settings: AppSettings = serde_json::from_str(
+            r#"{
+                "download_dir": "downloaded_invoices",
+                "drive_root_folder": "CARLOS ROLANDO MORAN CAMPOS",
+                "language": "es"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(settings.dte_query_filter, "DTE-03");
     }
 }
