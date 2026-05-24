@@ -1,6 +1,7 @@
 mod app;
 mod components;
 mod domain;
+mod i18n;
 mod services;
 
 use app::{App, AppAction};

@@ -358,12 +358,11 @@ fn message_to_candidate(message: GmailMessage) -> Option<CandidateEmail> {
         return None;
     }
 
-    let from = header_value(&payload.headers, "From").unwrap_or_else(|| "(unknown sender)".into());
-    let subject =
-        header_value(&payload.headers, "Subject").unwrap_or_else(|| "(no subject)".into());
+    let from = header_value(&payload.headers, "From").unwrap_or_default();
+    let subject = header_value(&payload.headers, "Subject").unwrap_or_default();
     let received_at = header_value(&payload.headers, "Date")
         .or_else(|| message.internal_date.clone())
-        .unwrap_or_else(|| "(unknown date)".into());
+        .unwrap_or_default();
     let internal_date_ms = message
         .internal_date
         .as_deref()

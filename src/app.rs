@@ -4,6 +4,7 @@ use crate::{
         results::{ResultsPage, ResultsPageAction},
     },
     domain::date_range::DateRange,
+    i18n::messages,
     services::gmail_search::{CandidateEmail, GmailSearchService},
 };
 use crossterm::event::{KeyCode, KeyEvent};
@@ -13,7 +14,7 @@ use std::{
     thread,
 };
 
-type SearchOutcome = Result<Vec<CandidateEmail>, String>;
+type SearchOutcome = Result<Vec<CandidateEmail>, crate::services::gmail_search::GmailSearchError>;
 
 pub struct App {
     screen: Screen,
@@ -85,16 +86,16 @@ impl App {
         match receiver.try_recv() {
             Ok(Ok(results)) => {
                 self.results = results;
-                self.results_page.reset();
+                self.results_page.reset(&self.results);
                 self.search = SearchState::Idle;
                 self.screen = Screen::Results;
             }
             Ok(Err(error)) => {
-                self.search = SearchState::Failed(error);
+                self.search = SearchState::Failed(messages().gmail_search_error(&error));
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => {
-                self.search = SearchState::Failed("Gmail search stopped unexpectedly.".to_string());
+                self.search = SearchState::Failed(messages().gmail_search_stopped.to_string());
             }
         }
     }
@@ -115,7 +116,7 @@ impl App {
     }
 
     fn handle_results_key(&mut self, key: KeyEvent) -> AppAction {
-        match self.results_page.handle_key(key, self.results.len()) {
+        match self.results_page.handle_key(key, &self.results) {
             ResultsPageAction::Continue => AppAction::Continue,
             ResultsPageAction::Back => {
                 self.screen = Screen::Home;
@@ -129,7 +130,7 @@ impl App {
         let range = match DateRange::parse(&input.initial_date, &input.final_date) {
             Ok(range) => range,
             Err(error) => {
-                self.search = SearchState::Failed(error.to_string());
+                self.search = SearchState::Failed(messages().date_range_error(&error).to_string());
                 return;
             }
         };
@@ -139,9 +140,7 @@ impl App {
 
         thread::spawn(move || {
             let service = GmailSearchService::default();
-            let result = service
-                .search_invoice_candidates(&range)
-                .map_err(|error| error.to_string());
+            let result = service.search_invoice_candidates(&range);
             let _ = sender.send(result);
         });
 

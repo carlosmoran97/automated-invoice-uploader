@@ -1,3 +1,4 @@
+use crate::i18n::{Messages, messages};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
@@ -38,15 +39,16 @@ pub enum HomePageStatus<'a> {
 
 impl HomePage {
     pub fn render(&self, frame: &mut Frame, status: HomePageStatus<'_>) {
+        let text = messages();
         let area = centered_rect(frame.area(), 96, 26);
         let block = Block::bordered()
-            .title(" Automated Invoice Uploader ")
+            .title(format!(" {} ", text.app_title))
             .title_alignment(Alignment::Center)
             .border_type(BorderType::Rounded);
         let inner = block.inner(area);
 
         frame.render_widget(block, area);
-        self.form.render(frame, inner, status);
+        self.form.render(frame, inner, status, text);
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> HomePageAction {
@@ -90,7 +92,13 @@ impl Default for SearchCriteriaForm {
 }
 
 impl SearchCriteriaForm {
-    fn render(&self, frame: &mut Frame, area: Rect, status: HomePageStatus<'_>) {
+    fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        status: HomePageStatus<'_>,
+        text: &'static Messages,
+    ) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -102,8 +110,9 @@ impl SearchCriteriaForm {
             .split(area);
 
         let title = Paragraph::new(vec![
-            Line::from("Search Criteria").style(Style::default().add_modifier(Modifier::BOLD)),
-            Line::from("Select the Gmail search period before collecting invoice emails."),
+            Line::from(text.search_criteria_title)
+                .style(Style::default().add_modifier(Modifier::BOLD)),
+            Line::from(text.search_criteria_subtitle),
         ]);
         frame.render_widget(title, chunks[0]);
 
@@ -115,33 +124,35 @@ impl SearchCriteriaForm {
         self.render_date_field(
             frame,
             field_chunks[0],
-            "Initial date",
+            text.initial_date,
             self.initial_date,
             DateField::Initial,
+            text,
         );
         self.render_date_field(
             frame,
             field_chunks[1],
-            "Final date",
+            text.final_date,
             self.final_date,
             DateField::Final,
+            text,
         );
 
         let footer = Paragraph::new(vec![
-            Line::from("Tab: switch field  Space: open calendar  Enter: search  q: quit"),
-            Line::from("In calendar: arrows move day/week  PgUp/PgDn month  Enter/Esc close"),
+            Line::from(text.form_footer),
+            Line::from(text.calendar_footer),
         ])
         .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(footer, chunks[2]);
 
-        frame.render_widget(self.status_widget(status), chunks[3]);
+        frame.render_widget(self.status_widget(status, text), chunks[3]);
 
         if self.picker_open {
             let anchor = match self.focused_field {
                 DateField::Initial => field_chunks[0],
                 DateField::Final => field_chunks[1],
             };
-            self.render_calendar_dropdown(frame, dropdown_rect(anchor, area, 36, 11));
+            self.render_calendar_dropdown(frame, dropdown_rect(anchor, area, 36, 11), text);
         }
     }
 
@@ -152,6 +163,7 @@ impl SearchCriteriaForm {
         title: &str,
         selected_date: Date,
         field: DateField,
+        text: &Messages,
     ) {
         let focused = self.focused_field == field;
         let block = Block::default()
@@ -164,11 +176,11 @@ impl SearchCriteriaForm {
             });
 
         let hint = if focused && self.picker_open {
-            "Calendar is open"
+            text.calendar_is_open
         } else if focused {
-            "Press Enter to open"
+            text.press_space_to_open
         } else {
-            "Press Tab to focus"
+            text.press_tab_to_focus
         };
         let field = Paragraph::new(vec![
             Line::from(format_date(selected_date)).style(
@@ -183,14 +195,14 @@ impl SearchCriteriaForm {
         frame.render_widget(field, area);
     }
 
-    fn render_calendar_dropdown(&self, frame: &mut Frame, area: Rect) {
+    fn render_calendar_dropdown(&self, frame: &mut Frame, area: Rect, text: &Messages) {
         let active_date = self.active_date();
         let block = Block::bordered()
             .title(format!(
-                " Select {} ",
+                " {} ",
                 match self.focused_field {
-                    DateField::Initial => "initial date",
-                    DateField::Final => "final date",
+                    DateField::Initial => text.select_initial_date,
+                    DateField::Final => text.select_final_date,
                 }
             ))
             .border_type(BorderType::Rounded)
@@ -229,27 +241,30 @@ impl SearchCriteriaForm {
         events
     }
 
-    fn status_widget<'a>(&self, status: HomePageStatus<'a>) -> Paragraph<'a> {
+    fn status_widget<'a>(
+        &self,
+        status: HomePageStatus<'a>,
+        text: &'static Messages,
+    ) -> Paragraph<'a> {
         match status {
-            HomePageStatus::Idle => Paragraph::new(
-                "The default period is the first through last day of the current month.",
-            )
-            .style(Style::default().fg(Color::DarkGray)),
+            HomePageStatus::Idle => {
+                Paragraph::new(text.default_period).style(Style::default().fg(Color::DarkGray))
+            }
             HomePageStatus::Searching {
                 initial_date,
                 final_date,
             } => Paragraph::new(vec![
-                Line::from("Searching Gmail in INBOX...").style(
+                Line::from(text.searching_gmail).style(
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Line::from(vec![
-                    Span::raw("Initial date: "),
+                    Span::raw(format!("{}: ", text.initial_date)),
                     Span::styled(initial_date, Style::default().fg(Color::Cyan)),
                 ]),
                 Line::from(vec![
-                    Span::raw("Final date:   "),
+                    Span::raw(format!("{}: ", text.final_date)),
                     Span::styled(final_date, Style::default().fg(Color::Green)),
                 ]),
             ]),
