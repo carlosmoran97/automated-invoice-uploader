@@ -196,7 +196,7 @@ impl Messages {
 
 static SPANISH: Messages = Messages {
     language: Language::Spanish,
-    app_title: "Automated Invoice Uploader",
+    app_title: "DTE Uploader",
     search_criteria_title: "Criterios de busqueda",
     search_criteria_subtitle: "Selecciona el periodo de Gmail antes de buscar facturas.",
     initial_date: "Fecha inicial",
@@ -291,7 +291,7 @@ static SPANISH: Messages = Messages {
 
 static ENGLISH: Messages = Messages {
     language: Language::English,
-    app_title: "Automated Invoice Uploader",
+    app_title: "DTE Uploader",
     search_criteria_title: "Search Criteria",
     search_criteria_subtitle: "Select the Gmail search period before collecting invoice emails.",
     initial_date: "Initial date",

@@ -1,3 +1,12 @@
+mod review;
+mod settings;
+mod state;
+
+use self::{
+    review::{load_invoice_review, review_error_message, save_invoice_review},
+    settings::save_settings_input as persist_settings_input,
+    state::{ReviewContext, ReviewState, Screen, SearchState},
+};
 use crate::{
     components::{
         home::{HomePage, HomePageAction, HomePageStatus, SearchCriteriaInput},
@@ -5,29 +14,19 @@ use crate::{
         review::{ReviewPage, ReviewView},
         settings::{SettingsInput, SettingsPage, SettingsPageAction},
     },
-    domain::{
-        date_range::DateRange,
-        invoice::{InvoiceParseError, InvoiceSummary},
-    },
+    domain::date_range::DateRange,
     i18n::{Messages, messages_for},
     services::{
-        drive_upload::{DriveUploadError, DriveUploadService},
-        gmail_search::{
-            CandidateEmail, DownloadedAttachment, GmailSearchError, GmailSearchService,
-        },
-        invoice_files::{SavedInvoiceFiles, save_invoice_files},
-        settings::{AppSettings, load_settings, save_settings},
+        gmail_search::{CandidateEmail, GmailSearchService},
+        settings::{AppSettings, load_settings},
     },
 };
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::Frame;
 use std::{
-    path::PathBuf,
-    sync::mpsc::{self, Receiver, TryRecvError},
+    sync::mpsc::{self, TryRecvError},
     thread,
 };
-
-type SearchOutcome = Result<Vec<CandidateEmail>, crate::services::gmail_search::GmailSearchError>;
 
 pub struct App {
     screen: Screen,
@@ -45,75 +44,6 @@ pub struct App {
 pub enum AppAction {
     Continue,
     Quit,
-}
-
-enum Screen {
-    Home,
-    Results,
-    Review,
-    Settings,
-}
-
-enum SearchState {
-    Idle,
-    Running {
-        receiver: Receiver<SearchOutcome>,
-        initial_date: String,
-        final_date: String,
-    },
-    Failed(String),
-}
-
-#[derive(Clone)]
-struct ReviewContext {
-    emails: Vec<CandidateEmail>,
-    index: usize,
-    processed: usize,
-    skipped: usize,
-    saved_files: Vec<SavedInvoiceFiles>,
-}
-
-#[derive(Clone)]
-struct InvoiceReview {
-    email: CandidateEmail,
-    json_file: DownloadedAttachment,
-    invoice: InvoiceSummary,
-}
-
-enum ReviewState {
-    Idle,
-    Loading {
-        context: ReviewContext,
-        receiver: Receiver<Result<InvoiceReview, ReviewError>>,
-    },
-    Ready {
-        context: ReviewContext,
-        review: InvoiceReview,
-    },
-    Saving {
-        context: ReviewContext,
-        review: InvoiceReview,
-        receiver: Receiver<Result<SavedInvoiceFiles, ReviewError>>,
-    },
-    Error {
-        context: ReviewContext,
-        message: String,
-    },
-    Complete {
-        processed: usize,
-        skipped: usize,
-        saved_files: Vec<SavedInvoiceFiles>,
-    },
-}
-
-#[derive(Debug)]
-enum ReviewError {
-    Gmail(GmailSearchError),
-    Drive(DriveUploadError),
-    Invoice(InvoiceParseError),
-    Io(std::io::Error),
-    MissingJson,
-    MissingPdf,
 }
 
 impl Default for App {
@@ -274,7 +204,7 @@ impl App {
 
     fn save_settings_input(&mut self, input: SettingsInput) {
         let text = messages_for(input.language);
-        let settings = match settings_from_input(input, text) {
+        let settings = match persist_settings_input(input, text) {
             Ok(settings) => settings,
             Err(message) => {
                 self.settings_page.mark_error(message);
@@ -282,14 +212,9 @@ impl App {
             }
         };
 
-        match save_settings(&settings) {
-            Ok(()) => {
-                self.settings = settings;
-                self.settings_page.reset(&self.settings);
-                self.settings_page.mark_saved();
-            }
-            Err(error) => self.settings_page.mark_error(error.to_string()),
-        }
+        self.settings = settings;
+        self.settings_page.reset(&self.settings);
+        self.settings_page.mark_saved();
     }
 
     fn start_search(&mut self, input: SearchCriteriaInput) {
@@ -491,90 +416,5 @@ impl App {
                 saved_files: &[],
             },
         }
-    }
-}
-
-fn settings_from_input(input: SettingsInput, text: &Messages) -> Result<AppSettings, String> {
-    let download_dir = input.download_dir.trim();
-    if download_dir.is_empty() {
-        return Err(text.settings_empty_download_dir.to_string());
-    }
-
-    let drive_root_folder = input.drive_root_folder.trim();
-    if drive_root_folder.is_empty() {
-        return Err(text.settings_empty_drive_root_folder.to_string());
-    }
-
-    Ok(AppSettings {
-        download_dir: PathBuf::from(download_dir),
-        drive_root_folder: drive_root_folder.to_string(),
-        language: input.language,
-    })
-}
-
-fn load_invoice_review(email: CandidateEmail) -> Result<InvoiceReview, ReviewError> {
-    let service = GmailSearchService::default();
-    let mut last_parse_error = None;
-
-    for json_attachment in &email.json_attachments {
-        let json_file = service
-            .download_attachment(&email.id, json_attachment)
-            .map_err(ReviewError::Gmail)?;
-        match InvoiceSummary::from_json_bytes(&json_file.filename, &json_file.bytes) {
-            Ok(invoice) => {
-                return Ok(InvoiceReview {
-                    email,
-                    json_file,
-                    invoice,
-                });
-            }
-            Err(error) => last_parse_error = Some(error),
-        }
-    }
-
-    if let Some(error) = last_parse_error {
-        Err(ReviewError::Invoice(error))
-    } else {
-        Err(ReviewError::MissingJson)
-    }
-}
-
-fn save_invoice_review(
-    review: InvoiceReview,
-    settings: AppSettings,
-) -> Result<SavedInvoiceFiles, ReviewError> {
-    let pdf_attachment = review
-        .email
-        .pdf_attachments
-        .first()
-        .ok_or(ReviewError::MissingPdf)?;
-    let service = GmailSearchService::default();
-    let pdf_file = service
-        .download_attachment(&review.email.id, pdf_attachment)
-        .map_err(ReviewError::Gmail)?;
-
-    let mut saved_files = save_invoice_files(
-        &review.invoice,
-        &review.json_file,
-        &pdf_file,
-        &settings.download_dir,
-    )
-    .map_err(ReviewError::Io)?;
-    let upload = DriveUploadService::default()
-        .upload_invoice_files(&review.invoice, &saved_files, &settings.drive_root_folder)
-        .map_err(ReviewError::Drive)?;
-    saved_files.drive_upload = Some(upload);
-
-    Ok(saved_files)
-}
-
-fn review_error_message(error: ReviewError, text: &Messages) -> String {
-    match error {
-        ReviewError::Gmail(error) => text.gmail_search_error(&error),
-        ReviewError::Drive(error) => text.drive_upload_error(&error),
-        ReviewError::Invoice(error) => format!("{}: {error}", text.invoice_json_error_prefix),
-        ReviewError::Io(error) => format!("{}: {error}", text.invoice_save_error_prefix),
-        ReviewError::MissingJson => text.missing_json_error.to_string(),
-        ReviewError::MissingPdf => text.missing_pdf_error.to_string(),
     }
 }
