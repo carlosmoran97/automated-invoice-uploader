@@ -228,9 +228,19 @@ impl ReviewPage {
             Line::from(format!("{}:", text.saved_files_label)),
         ];
 
-        for files in saved_files.iter().take(8) {
+        for files in saved_files.iter().take(5) {
             lines.push(Line::from(format!("JSON: {}", files.json_path.display())));
             lines.push(Line::from(format!("PDF:  {}", files.pdf_path.display())));
+            if let Some(upload) = &files.drive_upload {
+                lines.push(Line::from(format!(
+                    "{}: {}",
+                    text.drive_folder_label, upload.folder_path
+                )));
+                lines.push(Line::from(format!(
+                    "{}: JSON {} | PDF {}",
+                    text.drive_file_ids_label, upload.json_file_id, upload.pdf_file_id
+                )));
+            }
         }
 
         lines.push(Line::from(""));

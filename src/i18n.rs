@@ -1,4 +1,7 @@
-use crate::{domain::date_range::DateRangeError, services::gmail_search::GmailSearchError};
+use crate::{
+    domain::date_range::DateRangeError,
+    services::{drive_upload::DriveUploadError, gmail_search::GmailSearchError},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Language {
@@ -80,6 +83,8 @@ pub struct Messages {
     pub taxes_label: &'static str,
     pub line_items_label: &'static str,
     pub saved_files_label: &'static str,
+    pub drive_folder_label: &'static str,
+    pub drive_file_ids_label: &'static str,
     pub processed_label: &'static str,
     pub skipped_label: &'static str,
     pub unit_price_label: &'static str,
@@ -150,6 +155,13 @@ impl Messages {
             Language::English => gmail_search_error_en(error),
         }
     }
+
+    pub fn drive_upload_error(&self, error: &DriveUploadError) -> String {
+        match self.language {
+            Language::Spanish => drive_upload_error_es(error),
+            Language::English => drive_upload_error_en(error),
+        }
+    }
 }
 
 static SPANISH: Messages = Messages {
@@ -187,12 +199,12 @@ static SPANISH: Messages = Messages {
     gmail_search_stopped: "La busqueda de Gmail se detuvo inesperadamente.",
     review_title: "Revision de facturas",
     loading_invoice: "Descargando JSON de la factura...",
-    saving_invoice_files: "Descargando PDF y guardando archivos...",
+    saving_invoice_files: "Descargando PDF, guardando archivos y subiendo a Drive...",
     review_complete: "Revision completada.",
     review_error_title: "No se pudo revisar este correo",
     review_prompt: "Procesar este correo? Y/n",
     review_busy_footer: "q: salir",
-    review_ready_footer: "Y: procesar y descargar PDF  n: omitir  q: salir",
+    review_ready_footer: "Y: procesar y subir a Drive  n: omitir  q: salir",
     review_error_footer: "n: omitir  q: salir",
     review_complete_footer: "Enter/Esc: volver a resultados  q: salir",
     document_type_label: "Tipo de documento",
@@ -213,6 +225,8 @@ static SPANISH: Messages = Messages {
     taxes_label: "Tributos",
     line_items_label: "Lineas",
     saved_files_label: "Archivos guardados",
+    drive_folder_label: "Carpeta de Drive",
+    drive_file_ids_label: "IDs en Drive",
     processed_label: "Procesados",
     skipped_label: "Omitidos",
     unit_price_label: "Unitario",
@@ -255,12 +269,12 @@ static ENGLISH: Messages = Messages {
     gmail_search_stopped: "Gmail search stopped unexpectedly.",
     review_title: "Invoice review",
     loading_invoice: "Downloading invoice JSON...",
-    saving_invoice_files: "Downloading PDF and saving files...",
+    saving_invoice_files: "Downloading PDF, saving files, and uploading to Drive...",
     review_complete: "Review complete.",
     review_error_title: "Could not review this email",
     review_prompt: "Process this email? Y/n",
     review_busy_footer: "q: quit",
-    review_ready_footer: "Y: process and download PDF  n: skip  q: quit",
+    review_ready_footer: "Y: process and upload to Drive  n: skip  q: quit",
     review_error_footer: "n: skip  q: quit",
     review_complete_footer: "Enter/Esc: back to results  q: quit",
     document_type_label: "Document type",
@@ -281,6 +295,8 @@ static ENGLISH: Messages = Messages {
     taxes_label: "Taxes",
     line_items_label: "Line items",
     saved_files_label: "Saved files",
+    drive_folder_label: "Drive folder",
+    drive_file_ids_label: "Drive IDs",
     processed_label: "Processed",
     skipped_label: "Skipped",
     unit_price_label: "Unit",
@@ -356,6 +372,72 @@ fn gmail_search_error_en(error: &GmailSearchError) -> String {
         }
         GmailSearchError::Base64 { filename, source } => {
             format!("Failed to decode attachment `{filename}`: {source}")
+        }
+    }
+}
+
+fn drive_upload_error_es(error: &DriveUploadError) -> String {
+    match error {
+        DriveUploadError::CliNotFound => "No se encontro el CLI gws en PATH.".to_string(),
+        DriveUploadError::CommandFailed {
+            command,
+            status,
+            stderr,
+        } if stderr.is_empty() => {
+            format!("`{command}` fallo con codigo de salida {status}.")
+        }
+        DriveUploadError::CommandFailed {
+            command,
+            status,
+            stderr,
+        } => {
+            format!("`{command}` fallo con codigo de salida {status}: {stderr}")
+        }
+        DriveUploadError::Io(error) => format!("No se pudo ejecutar gws Drive: {error}"),
+        DriveUploadError::Json { context, source } => {
+            format!("No se pudo leer el JSON de gws Drive para {context}: {source}")
+        }
+        DriveUploadError::InvalidIssueDate { value } => {
+            format!("La fecha de emision `{value}` no permite resolver la carpeta de Drive.")
+        }
+        DriveUploadError::MissingFileName { path } => {
+            format!(
+                "No se pudo determinar el nombre del archivo `{}`.",
+                path.display()
+            )
+        }
+    }
+}
+
+fn drive_upload_error_en(error: &DriveUploadError) -> String {
+    match error {
+        DriveUploadError::CliNotFound => "gws CLI was not found in PATH.".to_string(),
+        DriveUploadError::CommandFailed {
+            command,
+            status,
+            stderr,
+        } if stderr.is_empty() => {
+            format!("`{command}` failed with exit status {status}.")
+        }
+        DriveUploadError::CommandFailed {
+            command,
+            status,
+            stderr,
+        } => {
+            format!("`{command}` failed with exit status {status}: {stderr}")
+        }
+        DriveUploadError::Io(error) => format!("Failed to run gws Drive: {error}"),
+        DriveUploadError::Json { context, source } => {
+            format!("Failed to parse gws Drive JSON for {context}: {source}")
+        }
+        DriveUploadError::InvalidIssueDate { value } => {
+            format!("Invoice issue date `{value}` cannot be mapped to a Drive folder.")
+        }
+        DriveUploadError::MissingFileName { path } => {
+            format!(
+                "Could not determine the file name for `{}`.",
+                path.display()
+            )
         }
     }
 }

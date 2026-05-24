@@ -1,4 +1,7 @@
-use crate::{domain::invoice::InvoiceSummary, services::gmail_search::DownloadedAttachment};
+use crate::{
+    domain::invoice::InvoiceSummary,
+    services::{drive_upload::UploadedInvoiceFiles, gmail_search::DownloadedAttachment},
+};
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -10,6 +13,7 @@ pub const DOWNLOAD_DIR: &str = "downloaded_invoices";
 pub struct SavedInvoiceFiles {
     pub json_path: PathBuf,
     pub pdf_path: PathBuf,
+    pub drive_upload: Option<UploadedInvoiceFiles>,
 }
 
 pub fn save_invoice_files(
@@ -30,6 +34,7 @@ pub fn save_invoice_files(
     Ok(SavedInvoiceFiles {
         json_path,
         pdf_path,
+        drive_upload: None,
     })
 }
 

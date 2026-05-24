@@ -10,6 +10,7 @@ use crate::{
     },
     i18n::messages,
     services::{
+        drive_upload::{DriveUploadError, DriveUploadService},
         gmail_search::{
             CandidateEmail, DownloadedAttachment, GmailSearchError, GmailSearchService,
         },
@@ -101,6 +102,7 @@ enum ReviewState {
 #[derive(Debug)]
 enum ReviewError {
     Gmail(GmailSearchError),
+    Drive(DriveUploadError),
     Invoice(InvoiceParseError),
     Io(std::io::Error),
     MissingJson,
@@ -466,12 +468,20 @@ fn save_invoice_review(review: InvoiceReview) -> Result<SavedInvoiceFiles, Revie
         .download_attachment(&review.email.id, pdf_attachment)
         .map_err(ReviewError::Gmail)?;
 
-    save_invoice_files(&review.invoice, &review.json_file, &pdf_file).map_err(ReviewError::Io)
+    let mut saved_files = save_invoice_files(&review.invoice, &review.json_file, &pdf_file)
+        .map_err(ReviewError::Io)?;
+    let upload = DriveUploadService::default()
+        .upload_invoice_files(&review.invoice, &saved_files)
+        .map_err(ReviewError::Drive)?;
+    saved_files.drive_upload = Some(upload);
+
+    Ok(saved_files)
 }
 
 fn review_error_message(error: ReviewError) -> String {
     match error {
         ReviewError::Gmail(error) => messages().gmail_search_error(&error),
+        ReviewError::Drive(error) => messages().drive_upload_error(&error),
         ReviewError::Invoice(error) => format!("No se pudo leer el JSON de la factura: {error}"),
         ReviewError::Io(error) => format!("No se pudieron guardar los archivos: {error}"),
         ReviewError::MissingJson => "Este correo no tiene un adjunto JSON descargable.".to_string(),
