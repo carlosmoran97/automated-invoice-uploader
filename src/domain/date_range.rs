@@ -1,5 +1,17 @@
 use std::fmt;
 
+pub fn previous_month_bounds(today: time::Date) -> (time::Date, time::Date) {
+    let end = today
+        .replace_day(1)
+        .expect("every month has a first day")
+        .previous_day()
+        .expect("current date is after the minimum supported date");
+    (
+        end.replace_day(1).expect("every month has a first day"),
+        end,
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DateRange {
     start: Date,
@@ -146,6 +158,36 @@ fn is_leap_year(year: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn previous_month_covers_every_month_length_and_year_boundary() {
+        use time::{Date, Month};
+        for (year, month, expected_year, expected_month, last_day) in [
+            (2026, Month::November, 2026, Month::October, 31),
+            (2026, Month::May, 2026, Month::April, 30),
+            (2026, Month::March, 2026, Month::February, 28),
+            (2024, Month::March, 2024, Month::February, 29),
+            (2026, Month::January, 2025, Month::December, 31),
+        ] {
+            for day in [1, 10, 28] {
+                let (start, end) =
+                    previous_month_bounds(Date::from_calendar_date(year, month, day).unwrap());
+                assert_eq!(
+                    start,
+                    Date::from_calendar_date(expected_year, expected_month, 1).unwrap()
+                );
+                assert_eq!(
+                    end,
+                    Date::from_calendar_date(expected_year, expected_month, last_day).unwrap()
+                );
+                let range = DateRange::parse(&start.to_string(), &end.to_string()).unwrap();
+                assert_eq!(
+                    range.gmail_before_date(),
+                    format!("{year:04}/{:02}/01", u8::from(month))
+                );
+            }
+        }
+    }
 
     #[test]
     fn parses_valid_date_range() {

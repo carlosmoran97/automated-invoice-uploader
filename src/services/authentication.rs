@@ -367,6 +367,9 @@ impl CommandRunner for SystemCommandRunner {
     fn login(&self, args: &[&str]) -> Result<bool, CommandError> {
         Command::new("gws")
             .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .status()
             .map(|status| status.success())
             .map_err(spawn_error)

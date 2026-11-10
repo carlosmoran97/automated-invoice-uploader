@@ -1,422 +1,541 @@
 mod review;
 mod settings;
-mod state;
+pub(crate) mod state;
 
 use self::{
     review::{load_invoice_review, review_error_message, save_invoice_review},
-    settings::save_settings_input as persist_settings_input,
-    state::{ReviewContext, ReviewState, Screen, SearchState},
+    state::*,
 };
 use crate::{
     components::{
-        home::{HomePage, HomePageAction, HomePageStatus, SearchCriteriaInput},
-        results::{ResultsPage, ResultsPageAction},
-        review::{ReviewPage, ReviewView},
-        settings::{SettingsInput, SettingsPage, SettingsPageAction},
+        calendar::{Calendar, CalendarEvent},
+        text_input::{Submitted, TextInput},
+        widgets::*,
     },
-    domain::date_range::DateRange,
-    i18n::{Messages, messages_for},
+    i18n::{Language, Messages, messages_for},
     services::{
+        authentication::{AuthenticationEvent, AuthenticationService},
         gmail_search::{CandidateEmail, GmailSearchService},
         settings::AppSettings,
     },
 };
-use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::Frame;
-use std::{
-    sync::mpsc::{self, TryRecvError},
-    thread,
+use gpui::{
+    Context, Div, Entity, FocusHandle, FontWeight, IntoElement, KeyDownEvent, ScrollStrategy,
+    UniformListScrollHandle, Window, actions, div, prelude::*, px, rgb,
 };
+use time::OffsetDateTime;
 
-pub struct App {
-    screen: Screen,
-    home_page: HomePage,
-    results_page: ResultsPage,
-    review_page: ReviewPage,
-    settings_page: SettingsPage,
-    search: SearchState,
-    review: ReviewState,
-    results: Vec<CandidateEmail>,
-    search_frame: usize,
-    settings: AppSettings,
+#[derive(Clone)]
+pub(crate) enum UiAction {
+    Navigate(Screen),
+    Search,
+    ReviewSelected,
+    Highlight(usize),
+    ToggleEmail(usize),
+    ToggleAll,
+    Accept,
+    Skip,
+    SaveSettings,
+    Language(Language),
+    OpenCalendar(bool),
+    RetryAuthentication,
 }
 
-pub enum AppAction {
-    Continue,
-    Quit,
+actions!(invoice, [Quit, CloseWindow, TabNext, TabPrevious]);
+
+pub struct App {
+    pub(crate) state: AppState,
+    pub(crate) search_filter: Entity<TextInput>,
+    pub(crate) download_dir: Entity<TextInput>,
+    pub(crate) drive_folder: Entity<TextInput>,
+    pub(crate) settings_filter: Entity<TextInput>,
+    pub(crate) settings_language: Language,
+    pub(crate) initial_calendar: Entity<Calendar>,
+    pub(crate) final_calendar: Entity<Calendar>,
+    pub(crate) calendar_open: Option<bool>,
+    focus: FocusHandle,
+    pub(crate) results_focus: FocusHandle,
+    pub(crate) results_scroll: UniformListScrollHandle,
 }
 
 impl App {
-    pub fn new(settings: AppSettings) -> Self {
-        let home_page =
-            HomePage::default().with_dte_query_filter(settings.dte_query_filter.clone());
-        Self {
-            screen: Screen::Home,
-            home_page,
-            results_page: ResultsPage::default(),
-            review_page: ReviewPage,
-            settings_page: SettingsPage::default(),
-            search: SearchState::Idle,
-            review: ReviewState::Idle,
-            results: Vec::new(),
-            search_frame: 0,
-            settings,
+    pub fn new(settings: AppSettings, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let today = OffsetDateTime::now_local()
+            .unwrap_or_else(|_| OffsetDateTime::now_utc())
+            .date();
+        let state = AppState::new(settings.clone(), today);
+        let search_filter = cx.new(|cx| TextInput::new(settings.dte_query_filter.clone(), cx));
+        let download_dir =
+            cx.new(|cx| TextInput::new(settings.download_dir.display().to_string(), cx));
+        let drive_folder = cx.new(|cx| TextInput::new(settings.drive_root_folder.clone(), cx));
+        let settings_filter = cx.new(|cx| TextInput::new(settings.dte_query_filter.clone(), cx));
+        let initial_calendar =
+            cx.new(|cx| Calendar::new(state.criteria.initial_date, settings.language, cx));
+        let final_calendar =
+            cx.new(|cx| Calendar::new(state.criteria.final_date, settings.language, cx));
+        cx.subscribe_in(
+            &search_filter,
+            window,
+            |this, _, _: &Submitted, window, cx| this.dispatch(UiAction::Search, window, cx),
+        )
+        .detach();
+        for input in [&download_dir, &drive_folder, &settings_filter] {
+            cx.subscribe_in(input, window, |this, _, _: &Submitted, window, cx| {
+                this.dispatch(UiAction::SaveSettings, window, cx)
+            })
+            .detach();
         }
-    }
-
-    fn text(&self) -> &'static Messages {
-        messages_for(self.settings.language)
-    }
-
-    pub fn render(&self, frame: &mut Frame) {
-        let text = self.text();
-        match self.screen {
-            Screen::Home => self.home_page.render(frame, self.home_status(), text),
-            Screen::Results => self.results_page.render(frame, &self.results, text),
-            Screen::Review => self.review_page.render(frame, self.review_view(), text),
-            Screen::Settings => self.settings_page.render(frame, text),
+        for (initial, calendar) in [(true, &initial_calendar), (false, &final_calendar)] {
+            cx.subscribe_in(
+                calendar,
+                window,
+                move |this, _, event: &CalendarEvent, window, cx| {
+                    if let CalendarEvent::Selected(date) = event {
+                        if initial {
+                            this.state.criteria.initial_date = *date;
+                        } else {
+                            this.state.criteria.final_date = *date;
+                        }
+                        this.state.error = None;
+                    }
+                    this.calendar_open = None;
+                    this.focus.focus(window);
+                    cx.notify();
+                },
+            )
+            .detach();
         }
-    }
-
-    pub fn handle_key(&mut self, key: KeyEvent) -> AppAction {
-        if self.is_searching() {
-            return match key.code {
-                KeyCode::Char('q') => AppAction::Quit,
-                _ => AppAction::Continue,
-            };
-        }
-
-        match self.screen {
-            Screen::Home => self.handle_home_key(key),
-            Screen::Results => self.handle_results_key(key),
-            Screen::Review => self.handle_review_key(key),
-            Screen::Settings => self.handle_settings_key(key),
-        }
-    }
-
-    pub fn tick(&mut self) {
-        self.tick_review();
-        let text = self.text();
-
-        let SearchState::Running { receiver, .. } = &self.search else {
-            return;
+        let focus = cx.focus_handle();
+        focus.focus(window);
+        let app = Self {
+            state,
+            search_filter,
+            download_dir,
+            drive_folder,
+            settings_filter,
+            settings_language: settings.language,
+            initial_calendar,
+            final_calendar,
+            calendar_open: None,
+            focus,
+            results_focus: cx.focus_handle().tab_stop(true),
+            results_scroll: UniformListScrollHandle::default(),
         };
-        self.search_frame = self.search_frame.wrapping_add(1);
-
-        match receiver.try_recv() {
-            Ok(Ok(results)) => {
-                self.results = results;
-                self.results_page.reset(&self.results);
-                self.search = SearchState::Idle;
-                self.screen = Screen::Results;
-            }
-            Ok(Err(error)) => {
-                self.search = SearchState::Failed(text.gmail_search_error(&error));
-            }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => {
-                self.search = SearchState::Failed(text.gmail_search_stopped.to_string());
-            }
-        }
+        app.authenticate(cx);
+        app
     }
 
-    fn handle_home_key(&mut self, key: KeyEvent) -> AppAction {
-        if matches!(self.search, SearchState::Failed(_)) {
-            self.search = SearchState::Idle;
-        }
-
-        match self.home_page.handle_key(key) {
-            HomePageAction::Continue => AppAction::Continue,
-            HomePageAction::OpenSettings => {
-                self.settings_page.reset(&self.settings);
-                self.screen = Screen::Settings;
-                AppAction::Continue
-            }
-            HomePageAction::Quit => AppAction::Quit,
-            HomePageAction::Submit(input) => {
-                self.start_search(input);
-                AppAction::Continue
-            }
-        }
+    pub(crate) fn text(&self) -> &'static Messages {
+        messages_for(self.state.settings.language)
     }
 
-    fn handle_results_key(&mut self, key: KeyEvent) -> AppAction {
-        match self.results_page.handle_key(key, &self.results) {
-            ResultsPageAction::Continue => AppAction::Continue,
-            ResultsPageAction::Back => {
-                self.screen = Screen::Home;
-                AppAction::Continue
-            }
-            ResultsPageAction::ReviewSelected => {
-                let emails = self.results_page.selected_emails(&self.results);
-                if !emails.is_empty() {
-                    self.start_review(emails);
-                }
-                AppAction::Continue
-            }
-            ResultsPageAction::Quit => AppAction::Quit,
+    fn authenticate(&self, cx: &mut Context<Self>) {
+        enum Update {
+            Progress(AuthenticationEvent),
+            Finished(Result<(), crate::services::authentication::AuthenticationError>),
         }
-    }
-
-    fn handle_review_key(&mut self, key: KeyEvent) -> AppAction {
-        match key.code {
-            KeyCode::Char('q') => return AppAction::Quit,
-            _ => {}
-        }
-
-        match &self.review {
-            ReviewState::Ready { .. } => match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => self.process_current_review(),
-                KeyCode::Char('n') | KeyCode::Char('N') => self.skip_current_review(),
-                _ => {}
-            },
-            ReviewState::Error { .. } => match key.code {
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Enter => {
-                    self.skip_current_review()
-                }
-                _ => {}
-            },
-            ReviewState::Complete { .. } => match key.code {
-                KeyCode::Enter | KeyCode::Esc => self.screen = Screen::Results,
-                _ => {}
-            },
-            _ => {}
-        }
-
-        AppAction::Continue
-    }
-
-    fn handle_settings_key(&mut self, key: KeyEvent) -> AppAction {
-        match self.settings_page.handle_key(key) {
-            SettingsPageAction::Continue => AppAction::Continue,
-            SettingsPageAction::Back => {
-                self.screen = Screen::Home;
-                AppAction::Continue
-            }
-            SettingsPageAction::Quit => AppAction::Quit,
-            SettingsPageAction::Save(input) => {
-                self.save_settings_input(input);
-                AppAction::Continue
-            }
-        }
-    }
-
-    fn save_settings_input(&mut self, input: SettingsInput) {
-        let text = messages_for(input.language);
-        let settings = match persist_settings_input(input, text) {
-            Ok(settings) => settings,
-            Err(message) => {
-                self.settings_page.mark_error(message);
-                return;
-            }
-        };
-
-        self.settings = settings;
-        self.home_page
-            .set_dte_query_filter(self.settings.dte_query_filter.clone());
-        self.settings_page.reset(&self.settings);
-        self.settings_page.mark_saved();
-    }
-
-    fn start_search(&mut self, input: SearchCriteriaInput) {
-        let range = match DateRange::parse(&input.initial_date, &input.final_date) {
-            Ok(range) => range,
-            Err(error) => {
-                self.search = SearchState::Failed(self.text().date_range_error(&error).to_string());
-                return;
-            }
-        };
-        let (sender, receiver) = mpsc::channel();
-        let initial_date = range.initial_date();
-        let final_date = range.final_date();
-        let dte_query_filter = input.dte_query_filter.trim().to_string();
-        self.search_frame = 0;
-
-        thread::spawn(move || {
-            let service = GmailSearchService::default().with_dte_query_filter(dte_query_filter);
-            let result = service.search_invoice_candidates(&range);
-            let _ = sender.send(result);
+        let (sender, receiver) = async_channel::unbounded();
+        let worker = cx.background_executor().spawn(async move {
+            let outcome = AuthenticationService::default().ensure_authenticated(|event| {
+                let _ = sender.try_send(Update::Progress(event));
+            });
+            let _ = sender.try_send(Update::Finished(outcome));
         });
-
-        self.search = SearchState::Running {
-            receiver,
-            initial_date,
-            final_date,
-        };
-    }
-
-    fn home_status(&self) -> HomePageStatus<'_> {
-        match &self.search {
-            SearchState::Idle => HomePageStatus::Idle,
-            SearchState::Running {
-                initial_date,
-                final_date,
-                ..
-            } => HomePageStatus::Searching {
-                initial_date,
-                final_date,
-                frame: self.search_frame,
-            },
-            SearchState::Failed(error) => HomePageStatus::Error(error),
-        }
-    }
-
-    fn is_searching(&self) -> bool {
-        matches!(self.search, SearchState::Running { .. })
-    }
-
-    fn start_review(&mut self, emails: Vec<CandidateEmail>) {
-        self.screen = Screen::Review;
-        let context = ReviewContext {
-            emails,
-            index: 0,
-            processed: 0,
-            skipped: 0,
-            saved_files: Vec::new(),
-        };
-        self.start_loading_review(context);
-    }
-
-    fn start_loading_review(&mut self, context: ReviewContext) {
-        if context.index >= context.emails.len() {
-            self.review = ReviewState::Complete {
-                processed: context.processed,
-                skipped: context.skipped,
-                saved_files: context.saved_files,
-            };
-            return;
-        }
-
-        let email = context.emails[context.index].clone();
-        let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || {
-            let _ = sender.send(load_invoice_review(email));
-        });
-        self.review = ReviewState::Loading { context, receiver };
-    }
-
-    fn process_current_review(&mut self) {
-        let ReviewState::Ready { context, review } =
-            std::mem::replace(&mut self.review, ReviewState::Idle)
-        else {
-            return;
-        };
-        let (sender, receiver) = mpsc::channel();
-        let review_for_thread = review.clone();
-        let settings = self.settings.clone();
-
-        thread::spawn(move || {
-            let _ = sender.send(save_invoice_review(review_for_thread, settings));
-        });
-
-        self.review = ReviewState::Saving {
-            context,
-            review,
-            receiver,
-        };
-    }
-
-    fn skip_current_review(&mut self) {
-        let mut context = match std::mem::replace(&mut self.review, ReviewState::Idle) {
-            ReviewState::Ready { context, .. } | ReviewState::Error { context, .. } => context,
-            other => {
-                self.review = other;
-                return;
-            }
-        };
-
-        context.skipped += 1;
-        context.index += 1;
-        self.start_loading_review(context);
-    }
-
-    fn tick_review(&mut self) {
-        let text = self.text();
-        let next_state = match &self.review {
-            ReviewState::Loading { context, receiver } => match receiver.try_recv() {
-                Ok(Ok(review)) => Some(ReviewState::Ready {
-                    context: context.clone(),
-                    review,
-                }),
-                Ok(Err(error)) => Some(ReviewState::Error {
-                    context: context.clone(),
-                    message: review_error_message(error, text),
-                }),
-                Err(TryRecvError::Empty) => None,
-                Err(TryRecvError::Disconnected) => Some(ReviewState::Error {
-                    context: context.clone(),
-                    message: text.gmail_search_stopped.to_string(),
-                }),
-            },
-            ReviewState::Saving {
-                context, receiver, ..
-            } => match receiver.try_recv() {
-                Ok(Ok(saved_files)) => {
-                    let mut context = context.clone();
-                    context.processed += 1;
-                    context.index += 1;
-                    context.saved_files.push(saved_files);
-                    self.start_loading_review(context);
-                    None
+        cx.spawn(async move |this, cx| {
+            while let Ok(update) = receiver.recv().await {
+                let done = matches!(update, Update::Finished(_));
+                if this
+                    .update(cx, |this, cx| {
+                        match update {
+                            Update::Progress(event) => {
+                                this.state.authentication = AuthenticationState::Checking(event)
+                            }
+                            Update::Finished(Ok(())) => {
+                                this.state.authentication = AuthenticationState::Ready;
+                                this.state.screen = Screen::Home;
+                            }
+                            Update::Finished(Err(error)) => {
+                                this.state.authentication = AuthenticationState::Failed(
+                                    this.text().authentication_error(&error),
+                                )
+                            }
+                        }
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
                 }
-                Ok(Err(error)) => Some(ReviewState::Error {
-                    context: context.clone(),
-                    message: review_error_message(error, text),
-                }),
-                Err(TryRecvError::Empty) => None,
-                Err(TryRecvError::Disconnected) => Some(ReviewState::Error {
-                    context: context.clone(),
-                    message: text.gmail_search_stopped.to_string(),
-                }),
-            },
-            _ => None,
-        };
-
-        if let Some(next_state) = next_state {
-            self.review = next_state;
-        }
+                if done {
+                    break;
+                }
+            }
+            worker.await;
+        })
+        .detach();
     }
 
-    fn review_view(&self) -> ReviewView<'_> {
-        match &self.review {
-            ReviewState::Loading { context, .. } => ReviewView::Loading {
-                index: context.index,
-                total: context.emails.len(),
-                email: &context.emails[context.index],
-            },
-            ReviewState::Ready { context, review } => ReviewView::Ready {
-                index: context.index,
-                total: context.emails.len(),
-                email: &review.email,
-                invoice: &review.invoice,
-            },
-            ReviewState::Saving {
-                context, review, ..
-            } => ReviewView::Saving {
-                index: context.index,
-                total: context.emails.len(),
-                invoice: &review.invoice,
-            },
-            ReviewState::Error { context, message } => ReviewView::Error {
-                index: context.index,
-                total: context.emails.len(),
-                email: &context.emails[context.index],
-                message,
-            },
-            ReviewState::Complete {
-                processed,
-                skipped,
-                saved_files,
-            } => ReviewView::Complete {
-                processed: *processed,
-                skipped: *skipped,
-                saved_files,
-            },
-            ReviewState::Idle => ReviewView::Complete {
-                processed: 0,
-                skipped: 0,
-                saved_files: &[],
-            },
+    pub(crate) fn dispatch(
+        &mut self,
+        action: UiAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            UiAction::Navigate(screen) => {
+                if self.state.navigate(screen) {
+                    self.calendar_open = None;
+                    if screen == Screen::Settings {
+                        let input = SettingsInput::from(&self.state.settings);
+                        self.download_dir
+                            .update(cx, |view, cx| view.set_value(input.download_dir, cx));
+                        self.drive_folder
+                            .update(cx, |view, cx| view.set_value(input.drive_root_folder, cx));
+                        self.settings_filter
+                            .update(cx, |view, cx| view.set_value(input.dte_query_filter, cx));
+                        self.settings_language = input.language;
+                        self.state.settings_status = None;
+                    }
+                    self.focus.focus(window);
+                }
+            }
+            UiAction::Search => {
+                self.state.criteria.dte_query_filter = self.search_filter.read(cx).value();
+                if let Some((range, filter)) = self.state.begin_search() {
+                    self.calendar_open = None;
+                    let worker = cx.background_executor().spawn(async move {
+                        GmailSearchService::default()
+                            .with_dte_query_filter(filter)
+                            .search_invoice_candidates(&range)
+                    });
+                    cx.spawn(async move |this, cx| {
+                        let result = worker.await;
+                        let _ = this.update(cx, |this, cx| {
+                            match result {
+                                Ok(results) => {
+                                    this.state.finish_search(results);
+                                    this.results_scroll.scroll_to_item(0, ScrollStrategy::Top);
+                                }
+                                Err(error) => {
+                                    this.state.searching = false;
+                                    this.state.error = Some(this.text().gmail_search_error(&error));
+                                }
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                }
+            }
+            UiAction::ReviewSelected => {
+                if let Some(email) = self.state.begin_review() {
+                    self.load_review(email, cx);
+                }
+            }
+            UiAction::Highlight(index) => {
+                if !self.state.busy() && index < self.state.results.len() {
+                    self.state.highlighted = index;
+                    self.results_focus.focus(window);
+                }
+            }
+            UiAction::ToggleEmail(index) => self.state.toggle_email(index),
+            UiAction::ToggleAll => {
+                if !self.state.busy() && self.state.screen == Screen::Results {
+                    if self.state.selected_ids.len() == self.state.results.len() {
+                        self.state.selected_ids.clear();
+                    } else {
+                        self.state.selected_ids = self
+                            .state
+                            .results
+                            .iter()
+                            .map(|email| email.id.clone())
+                            .collect();
+                    }
+                }
+            }
+            UiAction::Accept => {
+                if let Some(review) = self.state.begin_save() {
+                    let settings = self.state.settings.clone();
+                    let worker = cx
+                        .background_executor()
+                        .spawn(async move { save_invoice_review(review, settings) });
+                    cx.spawn(async move |this, cx| {
+                        let result = worker.await;
+                        let _ = this.update(cx, |this, cx| {
+                            match result {
+                                Ok(files) => {
+                                    if let Some(email) = this.state.finish_save(files) {
+                                        this.load_review(email, cx);
+                                    }
+                                }
+                                Err(error) => {
+                                    this.state.review =
+                                        ReviewState::Error(review_error_message(error, this.text()))
+                                }
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                }
+            }
+            UiAction::Skip => {
+                if let Some(email) = self.state.skip_review() {
+                    self.load_review(email, cx);
+                }
+            }
+            UiAction::SaveSettings => {
+                if self.state.screen == Screen::Settings && !self.state.busy() {
+                    let input = SettingsInput {
+                        download_dir: self.download_dir.read(cx).value(),
+                        drive_root_folder: self.drive_folder.read(cx).value(),
+                        dte_query_filter: self.settings_filter.read(cx).value(),
+                        language: self.settings_language,
+                    };
+                    self.state.saving_settings = true;
+                    self.state.error = None;
+                    self.state.settings_status = None;
+                    let worker = cx.background_executor().spawn(async move {
+                        settings::save_settings_input(input.clone(), messages_for(input.language))
+                    });
+                    cx.spawn(async move |this, cx| {
+                        let outcome = worker.await;
+                        let _ = this.update(cx, |this, cx| {
+                            this.state.saving_settings = false;
+                            match outcome {
+                                Ok(settings) => {
+                                    this.search_filter.update(cx, |view, cx| {
+                                        view.set_value(settings.dte_query_filter.clone(), cx)
+                                    });
+                                    this.state.criteria.dte_query_filter =
+                                        settings.dte_query_filter.clone();
+                                    this.state.settings = settings;
+                                    this.state.settings_status =
+                                        Some(this.text().settings_saved.into());
+                                }
+                                Err(error) => this.state.error = Some(error),
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .detach();
+                }
+            }
+            UiAction::Language(language) => {
+                if !self.state.busy() {
+                    self.settings_language = language;
+                }
+            }
+            UiAction::OpenCalendar(initial) => {
+                if !self.state.busy() && self.state.screen == Screen::Home {
+                    if self.calendar_open == Some(initial) {
+                        self.calendar_open = None;
+                    } else {
+                        self.calendar_open = Some(initial);
+                        let date = if initial {
+                            self.state.criteria.initial_date
+                        } else {
+                            self.state.criteria.final_date
+                        };
+                        let calendar = if initial {
+                            &self.initial_calendar
+                        } else {
+                            &self.final_calendar
+                        };
+                        let language = self.state.settings.language;
+                        calendar
+                            .update(cx, |calendar, cx| calendar.open(date, language, window, cx));
+                    }
+                }
+            }
+            UiAction::RetryAuthentication => {
+                if matches!(self.state.authentication, AuthenticationState::Failed(_)) {
+                    self.state.authentication =
+                        AuthenticationState::Checking(AuthenticationEvent::Checking);
+                    self.authenticate(cx);
+                }
+            }
         }
+        cx.notify();
+    }
+
+    fn load_review(&self, email: CandidateEmail, cx: &mut Context<Self>) {
+        let worker = cx
+            .background_executor()
+            .spawn(async move { load_invoice_review(email) });
+        cx.spawn(async move |this, cx| {
+            let outcome = worker.await;
+            let _ = this.update(cx, |this, cx| {
+                this.state.review = match outcome {
+                    Ok(review) => ReviewState::Ready(Box::new(review)),
+                    Err(error) => ReviewState::Error(review_error_message(error, this.text())),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    pub(crate) fn results_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event.keystroke.key.as_str() {
+            "space" => self.dispatch(UiAction::ToggleEmail(self.state.highlighted), window, cx),
+            "enter" => self.dispatch(UiAction::ReviewSelected, window, cx),
+            "up" => self.state.highlighted = self.state.highlighted.saturating_sub(1),
+            "down" => {
+                self.state.highlighted =
+                    (self.state.highlighted + 1).min(self.state.results.len().saturating_sub(1))
+            }
+            _ => return,
+        }
+        self.results_scroll
+            .scroll_to_item(self.state.highlighted, ScrollStrategy::Center);
+        cx.stop_propagation();
+        cx.notify();
+    }
+
+    fn render_startup(&self, cx: &mut Context<Self>) -> Div {
+        let text = self.text();
+        let failed = matches!(self.state.authentication, AuthenticationState::Failed(_));
+        let message = match &self.state.authentication {
+            AuthenticationState::Checking(event) => text.authentication_event(*event),
+            AuthenticationState::Failed(message) => message.clone(),
+            AuthenticationState::Ready => String::new(),
+        };
+        div().flex_1().flex().items_center().justify_center().child(
+            card()
+                .w(px(620.))
+                .child(heading(text.connection_title, text.connection_hint))
+                .child(notice(message, failed))
+                .when(failed, |s| {
+                    s.child(button(
+                        "retry",
+                        text.retry_button,
+                        true,
+                        true,
+                        UiAction::RetryAuthentication,
+                        cx,
+                    ))
+                }),
+        )
+    }
+}
+
+impl Render for App {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let text = self.text();
+        let can_navigate = !self.state.busy()
+            && matches!(self.state.authentication, AuthenticationState::Ready)
+            && (self.state.screen != Screen::Review
+                || matches!(self.state.review, ReviewState::Complete));
+        let body = match self.state.screen {
+            Screen::Startup => self.render_startup(cx).into_any_element(),
+            Screen::Home => self.render_home(cx).into_any_element(),
+            Screen::Results => self.render_results(window, cx).into_any_element(),
+            Screen::Review => self.render_review(cx).into_any_element(),
+            Screen::Settings => self.render_settings(cx).into_any_element(),
+        };
+        div()
+            .id("invoice-app")
+            .track_focus(&self.focus)
+            .size_full()
+            .flex()
+            .flex_col()
+            .font_family(".SystemUIFont")
+            .text_size(px(14.))
+            .text_color(rgb(INK))
+            .bg(rgb(BACKGROUND))
+            .on_action(|_: &Quit, _, cx| cx.quit())
+            .on_action(|_: &CloseWindow, window, _| window.remove_window())
+            .on_action(|_: &TabNext, window, _| window.focus_next())
+            .on_action(|_: &TabPrevious, window, _| window.focus_prev())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_8()
+                    .py_5()
+                    .bg(rgb(0xffffff))
+                    .border_b_1()
+                    .border_color(rgb(BORDER))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_4()
+                            .child(div().w(px(5.)).h(px(44.)).rounded_full().bg(rgb(BLUE)))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(px(20.))
+                                            .font_weight(FontWeight::BOLD)
+                                            .child(text.app_title),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(12.))
+                                            .text_color(rgb(MUTED))
+                                            .child(text.app_subtitle),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .child(button(
+                                "nav-search",
+                                text.search_button,
+                                self.state.screen == Screen::Home,
+                                can_navigate,
+                                UiAction::Navigate(Screen::Home),
+                                cx,
+                            ))
+                            .child(button(
+                                "nav-settings",
+                                text.settings_title,
+                                self.state.screen == Screen::Settings,
+                                can_navigate,
+                                UiAction::Navigate(Screen::Settings),
+                                cx,
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .id(("page", self.state.screen as usize))
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p_8()
+                    .child(body),
+            )
+            .child(
+                div()
+                    .px_8()
+                    .py_3()
+                    .border_t_1()
+                    .border_color(rgb(BORDER))
+                    .text_size(px(12.))
+                    .text_color(rgb(MUTED))
+                    .child(
+                        if matches!(self.state.authentication, AuthenticationState::Ready) {
+                            text.connected_label
+                        } else {
+                            text.connection_title
+                        },
+                    ),
+            )
     }
 }

@@ -12,10 +12,10 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub(super) struct InvoiceReview {
-    pub(super) email: CandidateEmail,
-    pub(super) json_file: DownloadedAttachment,
-    pub(super) invoice: InvoiceSummary,
+pub(crate) struct InvoiceReview {
+    pub(crate) email: CandidateEmail,
+    pub(crate) json_file: DownloadedAttachment,
+    pub(crate) invoice: InvoiceSummary,
 }
 
 #[derive(Debug)]

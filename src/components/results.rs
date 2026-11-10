@@ -1,418 +1,248 @@
-use crate::{
-    i18n::Messages,
-    services::gmail_search::{AttachmentSummary, CandidateEmail},
+use super::widgets::*;
+use crate::app::{App, UiAction, state::Screen};
+use gpui::{
+    Context, Div, FontWeight, MouseButton, Stateful, Window, div, prelude::*, px, rgb, uniform_list,
 };
-use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::{
-    Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
-};
-use std::collections::HashSet;
 
-#[derive(Default)]
-pub struct ResultsPage {
-    selected: usize,
-    scroll_offset: usize,
-    details_scroll: u16,
-    selected_email_ids: HashSet<String>,
-}
-
-pub enum ResultsPageAction {
-    Continue,
-    Back,
-    Quit,
-    ReviewSelected,
-}
-
-impl ResultsPage {
-    pub fn reset(&mut self, emails: &[CandidateEmail]) {
-        self.selected = 0;
-        self.scroll_offset = 0;
-        self.details_scroll = 0;
-        self.selected_email_ids = emails.iter().map(|email| email.id.clone()).collect();
-    }
-
-    pub fn render(&self, frame: &mut Frame, emails: &[CandidateEmail], text: &'static Messages) {
-        let area = centered_rect(frame.area(), 112, 38);
-        let block = Block::bordered()
-            .title(format!(" {} ", text.results_title))
-            .title_alignment(Alignment::Center)
-            .border_type(BorderType::Rounded);
-        let inner = block.inner(area);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Percentage(45),
-                Constraint::Min(10),
-                Constraint::Length(1),
-            ])
-            .split(inner);
-
-        frame.render_widget(block, area);
-        self.render_header(frame, chunks[0], emails.len(), text);
-        self.render_list(frame, chunks[1], emails, text);
-        self.render_details(frame, chunks[2], emails, text);
-        self.render_footer(frame, chunks[3], text);
-    }
-
-    pub fn handle_key(&mut self, key: KeyEvent, emails: &[CandidateEmail]) -> ResultsPageAction {
-        match key.code {
-            KeyCode::Char('q') => return ResultsPageAction::Quit,
-            KeyCode::Char('b') | KeyCode::Esc => return ResultsPageAction::Back,
-            KeyCode::Enter => {
-                if !self.selected_email_ids.is_empty() {
-                    return ResultsPageAction::ReviewSelected;
-                }
-            }
-            KeyCode::Char(' ') => self.toggle_selected_email(emails),
-            KeyCode::Up | KeyCode::Char('k') => self.move_selection_up(emails.len()),
-            KeyCode::Down | KeyCode::Char('j') => self.move_selection_down(emails.len()),
-            KeyCode::PageUp => self.scroll_details_up(),
-            KeyCode::PageDown => self.scroll_details_down(),
-            _ => {}
-        }
-
-        ResultsPageAction::Continue
-    }
-
-    fn render_header(&self, frame: &mut Frame, area: Rect, count: usize, text: &Messages) {
-        let header = Paragraph::new(vec![
-            Line::from(text.results_header).style(Style::default().add_modifier(Modifier::BOLD)),
-            Line::from(text.candidate_count(count)),
-            Line::from(text.selected_candidate_count(self.selected_email_ids.len())),
-        ]);
-
-        frame.render_widget(header, area);
-    }
-
-    fn render_list(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        emails: &[CandidateEmail],
-        text: &Messages,
-    ) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" {} ", text.results_list_title))
-            .border_style(Style::default().fg(Color::DarkGray));
-        let visible_rows = block.inner(area).height as usize;
-        let end = (self.scroll_offset + visible_rows).min(emails.len());
-        let mut lines = Vec::new();
-
-        if emails.is_empty() {
-            lines.push(Line::from(text.no_matching_emails));
-        } else {
-            for (index, email) in emails[self.scroll_offset..end].iter().enumerate() {
-                let absolute_index = self.scroll_offset + index;
-                let selected = absolute_index == self.selected;
-                let marker = if selected { ">" } else { " " };
-                let checkbox = if self.is_email_selected(email) {
-                    "[x]"
-                } else {
-                    "[ ]"
-                };
-                let row = format!(
-                    "{marker} {checkbox} {}  {}  {}",
-                    truncate(display_or(&email.received_at, text.unknown_date), 22),
-                    truncate(display_or(&email.from, text.unknown_sender), 28),
-                    truncate(display_or(&email.subject, text.no_subject), 33)
-                );
-                let style = if selected {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-
-                lines.push(Line::from(row).style(style));
-            }
-        }
-
-        frame.render_widget(Paragraph::new(lines).block(block), area);
-    }
-
-    fn render_details(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        emails: &[CandidateEmail],
-        text: &Messages,
-    ) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" {} ", text.selected_email_title))
-            .border_style(Style::default().fg(Color::DarkGray));
-        let inner = block.inner(area);
-        let lines = emails.get(self.selected).map_or_else(
-            || vec![Line::from(text.no_email_selected)],
-            |email| {
-                let message_text = email_message_text(email, text);
-                vec![
-                    Line::from(vec![
-                        Span::styled(
-                            text.from_label,
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(display_or(&email.from, text.unknown_sender)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled(
-                            text.subject_label,
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(display_or(&email.subject, text.no_subject)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled(
+impl App {
+    pub(crate) fn render_results(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let text = self.text();
+        let list_height = (window.viewport_size().height - px(400.)).clamp(px(180.), px(410.));
+        let count = self.state.results.len();
+        let selected = self.state.selected_ids.len();
+        let details = card()
+            .id("email-details")
+            .max_h(list_height + px(46.))
+            .overflow_y_scroll()
+            .w(px(320.))
+            .flex_shrink_0()
+            .gap_5()
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(text.selected_email_title),
+            )
+            .map(|panel| {
+                if let Some(email) = self.state.results.get(self.state.highlighted) {
+                    panel
+                        .child(detail(text.from_label, email.from.clone()))
+                        .child(detail(text.subject_label, email.subject.clone()))
+                        .child(detail(text.email_date_label, email.received_at.clone()))
+                        .child(detail(
                             text.pdf_label,
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(attachment_names(&email.pdf_attachments)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled(
+                            email
+                                .pdf_attachments
+                                .iter()
+                                .map(|a| a.filename.as_str())
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        ))
+                        .child(detail(
                             text.json_label,
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(attachment_names(&email.json_attachments)),
-                    ]),
-                    Line::from(""),
-                    Line::from(vec![Span::styled(
-                        text.snippet_label,
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )]),
-                    Line::from(message_text),
-                    Line::from(""),
-                    Line::from(vec![
-                        Span::styled(
-                            "Scroll: ",
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled("PgUp/PgDn", Style::default().fg(Color::DarkGray)),
-                    ]),
-                ]
-            },
-        );
-        let scroll = emails
-            .get(self.selected)
-            .map(|email| {
-                self.details_scroll
-                    .min(max_details_scroll(email, text, inner))
-            })
-            .unwrap_or_default();
-
-        frame.render_widget(
-            Paragraph::new(lines)
-                .block(block)
-                .wrap(Wrap { trim: false })
-                .scroll((scroll, 0)),
-            area,
-        );
+                            email
+                                .json_attachments
+                                .iter()
+                                .map(|a| a.filename.as_str())
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        ))
+                        .child(detail(text.snippet_label, email.snippet.clone()))
+                } else {
+                    panel.child(text.no_email_selected)
+                }
+            });
+        let list = div()
+            .id("email-list")
+            .track_focus(&self.results_focus)
+            .flex_1()
+            .min_w_0()
+            .bg(rgb(0xffffff))
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(BORDER))
+            .overflow_hidden()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, _| this.results_focus.focus(window)),
+            )
+            .on_key_down(cx.listener(Self::results_key))
+            .focus(|s| s.border_color(rgb(BLUE)))
+            .child(
+                div()
+                    .px_4()
+                    .py_3()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .border_b_1()
+                    .border_color(rgb(BORDER))
+                    .child(text.results_header),
+            )
+            .map(|panel| {
+                if count == 0 {
+                    panel.child(
+                        div()
+                            .p_6()
+                            .text_color(rgb(MUTED))
+                            .child(text.no_matching_emails),
+                    )
+                } else {
+                    panel.child(
+                        uniform_list(
+                            "candidate-emails",
+                            count,
+                            cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                                range
+                                    .map(|index| this.email_row(index, cx))
+                                    .collect::<Vec<_>>()
+                            }),
+                        )
+                        .w_full()
+                        .h(list_height)
+                        .track_scroll(self.results_scroll.clone()),
+                    )
+                }
+            });
+        div()
+            .flex()
+            .flex_col()
+            .gap_6()
+            .child(heading(
+                text.results_title,
+                format!(
+                    "{}  \u{b7}  {}",
+                    text.candidate_count(count),
+                    self.state.search_period
+                ),
+            ))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_color(rgb(MUTED))
+                            .child(text.selected_candidate_count(selected)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_3()
+                            .child(button(
+                                "toggle-all",
+                                if selected == count {
+                                    text.deselect_all_button
+                                } else {
+                                    text.select_all_button
+                                },
+                                false,
+                                count > 0,
+                                UiAction::ToggleAll,
+                                cx,
+                            ))
+                            .child(button(
+                                "review",
+                                text.review_selected_button,
+                                true,
+                                selected > 0,
+                                UiAction::ReviewSelected,
+                                cx,
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_5()
+                    .child(list)
+                    .child(details),
+            )
+            .child(div().flex().child(button(
+                "results-back",
+                text.back_button,
+                false,
+                true,
+                UiAction::Navigate(Screen::Home),
+                cx,
+            )))
     }
 
-    fn render_footer(&self, frame: &mut Frame, area: Rect, text: &Messages) {
-        let footer =
-            Paragraph::new(text.results_footer).style(Style::default().fg(Color::DarkGray));
-
-        frame.render_widget(footer, area);
-    }
-
-    fn move_selection_up(&mut self, email_count: usize) {
-        if email_count == 0 {
-            return;
-        }
-
-        self.selected = self.selected.saturating_sub(1);
-        if self.selected < self.scroll_offset {
-            self.scroll_offset = self.selected;
-        }
-        self.details_scroll = 0;
-    }
-
-    fn move_selection_down(&mut self, email_count: usize) {
-        if email_count == 0 {
-            return;
-        }
-
-        self.selected = (self.selected + 1).min(email_count - 1);
-        if self.selected >= self.scroll_offset + 1 {
-            self.scroll_offset = self.selected.saturating_sub(1);
-        }
-        self.details_scroll = 0;
-    }
-
-    fn toggle_selected_email(&mut self, emails: &[CandidateEmail]) {
-        let Some(email) = emails.get(self.selected) else {
-            return;
+    fn email_row(&self, index: usize, cx: &mut Context<Self>) -> Stateful<Div> {
+        let text = self.text();
+        let email = &self.state.results[index];
+        let checked = self.state.selected_ids.contains(&email.id);
+        let highlighted = self.state.highlighted == index;
+        let subject = if email.subject.is_empty() {
+            text.no_subject.to_owned()
+        } else {
+            email.subject.clone()
         };
-
-        if !self.selected_email_ids.remove(&email.id) {
-            self.selected_email_ids.insert(email.id.clone());
-        }
-    }
-
-    fn scroll_details_up(&mut self) {
-        self.details_scroll = self.details_scroll.saturating_sub(5);
-    }
-
-    fn scroll_details_down(&mut self) {
-        self.details_scroll = self.details_scroll.saturating_add(5);
-    }
-
-    fn is_email_selected(&self, email: &CandidateEmail) -> bool {
-        self.selected_email_ids.contains(&email.id)
-    }
-
-    pub fn selected_emails(&self, emails: &[CandidateEmail]) -> Vec<CandidateEmail> {
-        emails
-            .iter()
-            .filter(|email| self.is_email_selected(email))
-            .cloned()
-            .collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reset_selects_all_emails_by_default() {
-        let emails = vec![candidate("one"), candidate("two")];
-        let mut page = ResultsPage::default();
-
-        page.reset(&emails);
-
-        assert!(page.is_email_selected(&emails[0]));
-        assert!(page.is_email_selected(&emails[1]));
-    }
-
-    #[test]
-    fn space_toggles_highlighted_email_selection() {
-        let emails = vec![candidate("one"), candidate("two")];
-        let mut page = ResultsPage::default();
-        page.reset(&emails);
-
-        page.toggle_selected_email(&emails);
-        assert!(!page.is_email_selected(&emails[0]));
-
-        page.toggle_selected_email(&emails);
-        assert!(page.is_email_selected(&emails[0]));
-    }
-
-    fn candidate(id: &str) -> CandidateEmail {
-        CandidateEmail {
-            id: id.to_string(),
-            thread_id: String::new(),
-            from: String::new(),
-            subject: String::new(),
-            received_at: String::new(),
-            snippet: String::new(),
-            internal_date_ms: None,
-            pdf_attachments: Vec::new(),
-            json_attachments: Vec::new(),
-        }
-    }
-}
-
-fn attachment_names(attachments: &[AttachmentSummary]) -> String {
-    attachments
-        .iter()
-        .map(|attachment| attachment.filename.as_str())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn display_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
-    if value.trim().is_empty() {
-        fallback
-    } else {
-        value
-    }
-}
-
-fn email_message_text<'a>(email: &'a CandidateEmail, text: &'a Messages) -> &'a str {
-    display_or(&email.snippet, text.no_snippet)
-}
-
-fn max_details_scroll(email: &CandidateEmail, text: &Messages, area: Rect) -> u16 {
-    let width = area.width.max(1) as usize;
-    let visible_rows = area.height as usize;
-    let content_rows = [
-        format!(
-            "{}{}",
-            text.from_label,
-            display_or(&email.from, text.unknown_sender)
-        ),
-        format!(
-            "{}{}",
-            text.subject_label,
-            display_or(&email.subject, text.no_subject)
-        ),
-        format!(
-            "{}{}",
-            text.pdf_label,
-            attachment_names(&email.pdf_attachments)
-        ),
-        format!(
-            "{}{}",
-            text.json_label,
-            attachment_names(&email.json_attachments)
-        ),
-        String::new(),
-        text.snippet_label.to_string(),
-        email_message_text(email, text).to_string(),
-        String::new(),
-        "Scroll: PgUp/PgDn".to_string(),
-    ]
-    .iter()
-    .map(|line| wrapped_line_count(line, width))
-    .sum::<usize>();
-
-    content_rows
-        .saturating_sub(visible_rows)
-        .min(u16::MAX as usize) as u16
-}
-
-fn wrapped_line_count(value: &str, width: usize) -> usize {
-    if value.is_empty() {
-        return 1;
-    }
-
-    value
-        .lines()
-        .map(|line| (line.chars().count().max(1) + width - 1) / width)
-        .sum()
-}
-
-fn truncate(value: &str, max_chars: usize) -> String {
-    let mut chars = value.chars();
-    let truncated = chars.by_ref().take(max_chars).collect::<String>();
-
-    if chars.next().is_some() {
-        format!("{truncated}...")
-    } else {
-        truncated
-    }
-}
-
-fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
-    let horizontal_margin = area.width.saturating_sub(width) / 2;
-    let vertical_margin = area.height.saturating_sub(height) / 2;
-
-    Rect {
-        x: area.x + horizontal_margin,
-        y: area.y + vertical_margin,
-        width: width.min(area.width),
-        height: height.min(area.height),
+        let from = if email.from.is_empty() {
+            text.unknown_sender.to_owned()
+        } else {
+            email.from.clone()
+        };
+        div()
+            .id(("email", index))
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_3()
+            .h(px(84.))
+            .px_4()
+            .border_b_1()
+            .border_color(rgb(BORDER))
+            .bg(rgb(if highlighted { PALE } else { 0xffffff }))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgb(BACKGROUND)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.dispatch(UiAction::Highlight(index), window, cx)
+            }))
+            .child(
+                div()
+                    .id(("checkbox", index))
+                    .flex_shrink_0()
+                    .w(px(22.))
+                    .h(px(22.))
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(rgb(if checked { BLUE } else { MUTED }))
+                    .bg(rgb(if checked { BLUE } else { 0xffffff }))
+                    .text_color(rgb(0xffffff))
+                    .text_center()
+                    .child(if checked { "\u{2713}" } else { "" })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.dispatch(UiAction::ToggleEmail(index), window, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .truncate()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(subject),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(12.))
+                            .text_color(rgb(MUTED))
+                            .child(from),
+                    )
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(px(11.))
+                            .text_color(rgb(MUTED))
+                            .child(email.received_at.clone()),
+                    ),
+            )
     }
 }

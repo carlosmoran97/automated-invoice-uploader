@@ -2,11 +2,11 @@
 
 ## Project Structure & Module Organization
 
-This is a Rust 2024 terminal app for finding invoice emails, reviewing DTE JSON, downloading invoice files, and uploading accepted files to Google Drive with `gws`.
+This is a Rust 2024 macOS desktop app for finding invoice emails, reviewing DTE JSON, downloading invoice files, and uploading accepted files to Google Drive with `gws`.
 
-- `src/main.rs` starts the TUI runtime.
-- `src/app.rs` owns app state, screen transitions, and workers.
-- `src/components/` contains Ratatui UI only: `home`, `results`, and `review`.
+- `src/main.rs` opens the GPUI window and registers keyboard bindings.
+- `src/app.rs` owns the GPUI root view and background workers; `src/app/state.rs` holds testable workflow state.
+- `src/components/` contains GPUI views and reusable controls: `home`, `results`, `review`, `settings`, calendar, and text input.
 - `src/services/` contains external and filesystem logic: Gmail search/download, Drive upload, and local invoice file saving.
 - `src/domain/` contains parsing and validation, including date ranges and invoice summaries.
 - `src/i18n.rs` contains Spanish-default and English UI strings.
@@ -14,7 +14,7 @@ This is a Rust 2024 terminal app for finding invoice emails, reviewing DTE JSON,
 
 ## Build, Test, and Development Commands
 
-- `cargo run` starts the local TUI.
+- `cargo run` opens the local GPUI desktop window.
 - `cargo fmt` formats Rust code with `rustfmt`.
 - `cargo check` type-checks quickly without producing a final binary.
 - `cargo test` runs all unit tests.
@@ -22,6 +22,8 @@ This is a Rust 2024 terminal app for finding invoice emails, reviewing DTE JSON,
 Before testing Gmail or Drive flows manually, make sure the Google Workspace CLI (`gws`) is installed, authenticated, and available in `PATH`.
 
 ## Coding Style & Naming Conventions
+
+GPUI is pinned to 0.2.2. The macOS build uses `runtime_shaders` so the separate Xcode Metal compiler is not required.
 
 Use standard Rust formatting via `cargo fmt`; keep files ASCII unless existing content requires otherwise. Preserve module boundaries: UI components render and handle local input, while service modules perform Gmail, Drive, and file operations. Use `snake_case` for functions, modules, and variables; `PascalCase` for structs/enums; and descriptive enum variants such as `ReviewState::Saving`.
 
@@ -37,7 +39,7 @@ Run `cargo test` before handing off changes. Add focused unit tests when changin
 
 Recent commits are short and action-oriented, for example `review invoices and download files` and `upload to google drive`. Keep commit messages concise, specific, and in the imperative or verb-first style.
 
-Pull requests should describe the user-facing workflow change, list verification commands run, and note any `gws` behavior that needs manual validation. Include terminal screenshots only when UI layout changes materially.
+Pull requests should describe the user-facing workflow change, list verification commands run, and note any `gws` behavior that needs manual validation. Include desktop screenshots with fictitious data only when UI layout changes materially.
 
 ## Security & Configuration Tips
 
