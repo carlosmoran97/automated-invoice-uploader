@@ -57,6 +57,26 @@ Run it with:
 cargo run
 ```
 
+Before opening the terminal interface, the app checks `gws auth status` and makes
+small read-only Gmail and Drive requests. Each check has a 30-second timeout.
+`gws` renews access tokens using its saved credentials when possible. If login is
+required, the app runs the following command once, with the terminal available:
+
+```bash
+gws auth login --scopes https://www.googleapis.com/auth/gmail.readonly,https://www.googleapis.com/auth/drive
+```
+
+This skips the `gws` scope picker. Complete account selection and consent in the
+browser when Google requests them. Gmail access is read-only; Drive access allows
+the app to find existing accounting folders, create subfolders, and upload files.
+After login, the app verifies access again before opening the interface. A
+cancelled login or failed verification stops startup. Connection failures,
+disabled APIs, and invalid OAuth configuration stop startup without starting a
+login. Startup messages use the saved language preference.
+
+Credentials, refresh tokens, and encryption remain managed by `gws` with its
+existing storage configuration. The app does not export or store credentials.
+
 Use `Tab` to switch between the initial and final date fields. Press `Enter` or
 `Space` to open the calendar for the focused field. Inside the calendar, use the
 arrow keys to move by day or week, `PgUp` and `PgDn` to move by month, `Home`
@@ -79,6 +99,34 @@ The runtime environment is expected to have:
 - Rust and Cargo.
 - The Google Workspace CLI configured with access to Gmail and Google Drive.
 - Access to the target Google Drive folder shared with the accountant.
+
+## Repeated Google login
+
+If login works for a few days and then requires authorization again, check the
+OAuth project's publishing status in
+[Google Auth Platform > Audience](https://console.cloud.google.com/auth/audience).
+Select the project associated with your `gws` OAuth client. For external apps in
+**Testing**, Google issues refresh tokens that expire after seven days when
+requesting Gmail and Drive scopes. See
+[Google's refresh token expiration documentation](https://developers.google.com/identity/protocols/oauth2#expiration).
+
+If Testing is the cause, use **Publish app** to change the publishing status to
+**In production**, following any requirements shown in the console. Then run the
+login command above once to obtain a new authorization. This removes the
+Testing-specific seven-day lifetime; revoked permissions and other Google
+policies can still require login. The app never changes the Cloud project itself.
+
+If login is required on every execution, run `gws auth status` from the same
+terminal used to start the app. An `encryption_valid: false` result indicates that
+`gws` could not decrypt its saved credentials. Check access to the macOS keychain
+and confirm that login and subsequent runs use the same `gws` configuration and
+keyring backend. A decryption error observed from a restricted environment needs
+confirmation in your normal terminal; it does not by itself prove that the saved
+credentials are broken. Keep the full status output private.
+
+To validate persistence manually, start the app, complete authorization if
+requested, quit, and immediately start it again. The second launch should verify
+access and open the interface without another browser login.
 
 ## Notes
 

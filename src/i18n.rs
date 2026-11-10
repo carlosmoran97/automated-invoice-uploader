@@ -1,6 +1,12 @@
 use crate::{
     domain::date_range::DateRangeError,
-    services::{drive_upload::DriveUploadError, gmail_search::GmailSearchError},
+    services::{
+        authentication::{
+            AuthenticationCheck, AuthenticationError, AuthenticationEvent, LoginReason,
+        },
+        drive_upload::DriveUploadError,
+        gmail_search::GmailSearchError,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -125,6 +131,154 @@ pub struct Messages {
 }
 
 impl Messages {
+    pub fn authentication_event(&self, event: AuthenticationEvent) -> String {
+        match (self.language, event) {
+            (Language::Spanish, AuthenticationEvent::Checking) => {
+                "Comprobando acceso a Gmail y Google Drive...".to_string()
+            }
+            (Language::English, AuthenticationEvent::Checking) => {
+                "Checking Gmail and Google Drive access...".to_string()
+            }
+            (Language::Spanish, AuthenticationEvent::LoginRequired(reason)) => format!(
+                "{}. Iniciando sesion con gws; completa la autorizacion en el navegador.",
+                self.login_reason(reason)
+            ),
+            (Language::English, AuthenticationEvent::LoginRequired(reason)) => format!(
+                "{}. Starting gws login; complete authorization in your browser.",
+                self.login_reason(reason)
+            ),
+            (Language::Spanish, AuthenticationEvent::Verifying) => {
+                "Verificando el acceso despues de iniciar sesion...".to_string()
+            }
+            (Language::English, AuthenticationEvent::Verifying) => {
+                "Verifying access after login...".to_string()
+            }
+            (Language::Spanish, AuthenticationEvent::Ready) => {
+                "Acceso confirmado. Abriendo la interfaz...".to_string()
+            }
+            (Language::English, AuthenticationEvent::Ready) => {
+                "Access confirmed. Opening the interface...".to_string()
+            }
+        }
+    }
+
+    pub fn authentication_error(&self, error: &AuthenticationError) -> String {
+        match (self.language, error) {
+            (Language::Spanish, AuthenticationError::CliNotFound) => {
+                "No se encontro el CLI gws en PATH. Instala gws antes de continuar.".to_string()
+            }
+            (Language::English, AuthenticationError::CliNotFound) => {
+                "gws CLI was not found in PATH. Install gws before continuing.".to_string()
+            }
+            (Language::Spanish, AuthenticationError::Timeout(check)) => format!(
+                "La comprobacion de {} excedio los 30 segundos. Intenta de nuevo.",
+                self.authentication_check_name(*check)
+            ),
+            (Language::English, AuthenticationError::Timeout(check)) => format!(
+                "The {} check exceeded 30 seconds. Try again.",
+                self.authentication_check_name(*check)
+            ),
+            (Language::Spanish, AuthenticationError::Io(error)) => {
+                format!("No se pudo ejecutar gws: {error}")
+            }
+            (Language::English, AuthenticationError::Io(error)) => {
+                format!("Could not run gws: {error}")
+            }
+            (Language::Spanish, AuthenticationError::InvalidResponse(check)) => format!(
+                "gws devolvio una respuesta JSON invalida al comprobar {}.",
+                self.authentication_check_name(*check)
+            ),
+            (Language::English, AuthenticationError::InvalidResponse(check)) => format!(
+                "gws returned an invalid JSON response while checking {}.",
+                self.authentication_check_name(*check)
+            ),
+            (Language::Spanish, AuthenticationError::Configuration) => {
+                "La configuracion OAuth de gws es invalida o esta incompleta. Revisa el cliente OAuth o ejecuta gws auth setup.".to_string()
+            }
+            (Language::English, AuthenticationError::Configuration) => {
+                "The gws OAuth configuration is invalid or incomplete. Check the OAuth client or run gws auth setup.".to_string()
+            }
+            (Language::Spanish, AuthenticationError::Connection(check)) => format!(
+                "No se pudo conectar con Google al comprobar {}. Revisa tu conexion e intenta de nuevo.",
+                self.authentication_check_name(*check)
+            ),
+            (Language::English, AuthenticationError::Connection(check)) => format!(
+                "Could not connect to Google while checking {}. Check your connection and try again.",
+                self.authentication_check_name(*check)
+            ),
+            (Language::Spanish, AuthenticationError::ApiDisabled(check)) => format!(
+                "La API de {} no esta habilitada en el proyecto de Google Cloud. Habilitala antes de continuar.",
+                self.authentication_check_name(*check)
+            ),
+            (Language::English, AuthenticationError::ApiDisabled(check)) => format!(
+                "The {} API is not enabled in the Google Cloud project. Enable it before continuing.",
+                self.authentication_check_name(*check)
+            ),
+            (Language::Spanish, AuthenticationError::PermissionDenied(check)) => format!(
+                "Google denego el acceso a {}. Revisa los permisos y las politicas de tu cuenta.",
+                self.authentication_check_name(*check)
+            ),
+            (Language::English, AuthenticationError::PermissionDenied(check)) => format!(
+                "Google denied access to {}. Check your account permissions and policies.",
+                self.authentication_check_name(*check)
+            ),
+            (Language::Spanish, AuthenticationError::CheckFailed(check)) => format!(
+                "No se pudo comprobar {}. Ejecuta gws auth status en tu terminal para revisar el detalle.",
+                self.authentication_check_name(*check)
+            ),
+            (Language::English, AuthenticationError::CheckFailed(check)) => format!(
+                "Could not check {}. Run gws auth status in your terminal for details.",
+                self.authentication_check_name(*check)
+            ),
+            (Language::Spanish, AuthenticationError::LoginRequired(reason)) => format!(
+                "No se pudo validar el acceso: {}. Revisa gws auth status en tu terminal.",
+                self.login_reason(*reason)
+            ),
+            (Language::English, AuthenticationError::LoginRequired(reason)) => format!(
+                "Could not validate access: {}. Check gws auth status in your terminal.",
+                self.login_reason(*reason)
+            ),
+            (Language::Spanish, AuthenticationError::LoginFailed) => {
+                "El inicio de sesion se cancelo o fallo. Vuelve a abrir el programa para intentar de nuevo.".to_string()
+            }
+            (Language::English, AuthenticationError::LoginFailed) => {
+                "Login was cancelled or failed. Restart the app to try again.".to_string()
+            }
+        }
+    }
+
+    fn authentication_check_name(&self, check: AuthenticationCheck) -> &'static str {
+        match (self.language, check) {
+            (Language::Spanish, AuthenticationCheck::Status) => "la sesion de gws",
+            (Language::English, AuthenticationCheck::Status) => "gws session",
+            (_, AuthenticationCheck::Gmail) => "Gmail",
+            (_, AuthenticationCheck::Drive) => "Google Drive",
+        }
+    }
+
+    fn login_reason(&self, reason: LoginReason) -> &'static str {
+        match (self.language, reason) {
+            (Language::Spanish, LoginReason::MissingCredentials) => "No hay una sesion guardada",
+            (Language::English, LoginReason::MissingCredentials) => "No saved session was found",
+            (Language::Spanish, LoginReason::ExpiredSession) => "La sesion caduco o fue revocada",
+            (Language::English, LoginReason::ExpiredSession) => {
+                "The session expired or was revoked"
+            }
+            (Language::Spanish, LoginReason::InsufficientScopes) => {
+                "Faltan permisos de Gmail o Drive"
+            }
+            (Language::English, LoginReason::InsufficientScopes) => {
+                "Gmail or Drive permissions are missing"
+            }
+            (Language::Spanish, LoginReason::UnreadableCredentials) => {
+                "gws no pudo descifrar las credenciales guardadas"
+            }
+            (Language::English, LoginReason::UnreadableCredentials) => {
+                "gws could not decrypt the saved credentials"
+            }
+        }
+    }
+
     pub fn candidate_count(&self, count: usize) -> String {
         match self.language {
             Language::Spanish if count == 1 => {
@@ -546,6 +700,30 @@ mod tests {
         assert_eq!(
             messages_for(Language::English).search_criteria_title,
             "Search Criteria"
+        );
+    }
+
+    #[test]
+    fn startup_messages_use_the_configured_language() {
+        let spanish = messages_for(Language::Spanish);
+        let english = messages_for(Language::English);
+        assert_eq!(
+            spanish.authentication_event(AuthenticationEvent::Checking),
+            "Comprobando acceso a Gmail y Google Drive..."
+        );
+        assert_eq!(
+            english.authentication_event(AuthenticationEvent::Checking),
+            "Checking Gmail and Google Drive access..."
+        );
+        assert!(
+            spanish
+                .authentication_error(&AuthenticationError::Timeout(AuthenticationCheck::Drive))
+                .contains("Google Drive excedio los 30 segundos")
+        );
+        assert!(
+            english
+                .authentication_error(&AuthenticationError::Timeout(AuthenticationCheck::Gmail))
+                .contains("Gmail check exceeded 30 seconds")
         );
     }
 }

@@ -18,7 +18,7 @@ use crate::{
     i18n::{Messages, messages_for},
     services::{
         gmail_search::{CandidateEmail, GmailSearchService},
-        settings::{AppSettings, load_settings},
+        settings::AppSettings,
     },
 };
 use crossterm::event::{KeyCode, KeyEvent};
@@ -46,9 +46,8 @@ pub enum AppAction {
     Quit,
 }
 
-impl Default for App {
-    fn default() -> Self {
-        let settings = load_settings().unwrap_or_default();
+impl App {
+    pub fn new(settings: AppSettings) -> Self {
         let home_page =
             HomePage::default().with_dte_query_filter(settings.dte_query_filter.clone());
         Self {
@@ -64,9 +63,7 @@ impl Default for App {
             settings,
         }
     }
-}
 
-impl App {
     fn text(&self) -> &'static Messages {
         messages_for(self.settings.language)
     }
