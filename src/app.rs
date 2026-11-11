@@ -282,10 +282,8 @@ impl App {
                                     }
                                 }
                                 Err(error) => {
-                                    this.state.review = ReviewState::Error(review_error_message(
-                                        &error,
-                                        this.text(),
-                                    ))
+                                    let error = review_error_message(&error, this.text());
+                                    this.state.fail_save(error);
                                 }
                             }
                             cx.notify();

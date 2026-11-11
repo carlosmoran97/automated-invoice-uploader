@@ -96,6 +96,7 @@ pub struct Messages {
     pub pdf_previous_page: &'static str,
     pub pdf_next_page: &'static str,
     pub saving_invoice_files: &'static str,
+    pub retry_upload_button: &'static str,
     pub review_complete: &'static str,
     pub review_back_to_results: &'static str,
     pub review_saved_invoices: &'static str,
@@ -127,6 +128,8 @@ pub struct Messages {
     pub line_items_label: &'static str,
     pub drive_file_ids_label: &'static str,
     pub uploaded_invoices_label: &'static str,
+    pub already_in_drive_label: &'static str,
+    pub completed_partial_upload_label: &'static str,
     pub skipped_invoices_label: &'static str,
     pub unit_price_label: &'static str,
     pub taxed_short_label: &'static str,
@@ -430,6 +433,7 @@ static SPANISH: Messages = Messages {
     pdf_previous_page: "Anterior",
     pdf_next_page: "Siguiente",
     saving_invoice_files: "Guardando archivos y subiendo a Drive...",
+    retry_upload_button: "Reintentar subida",
     review_complete: "Revisi\u{f3}n completada",
     review_back_to_results: "Volver a resultados",
     review_saved_invoices: "Facturas guardadas",
@@ -461,6 +465,8 @@ static SPANISH: Messages = Messages {
     line_items_label: "Lineas",
     drive_file_ids_label: "IDs en Drive",
     uploaded_invoices_label: "Subidas a Drive",
+    already_in_drive_label: "Ya en Drive",
+    completed_partial_upload_label: "Se subi\u{f3} el archivo faltante",
     skipped_invoices_label: "Omitidas",
     unit_price_label: "Unitario",
     taxed_short_label: "Gravada",
@@ -544,6 +550,7 @@ static ENGLISH: Messages = Messages {
     pdf_previous_page: "Previous",
     pdf_next_page: "Next",
     saving_invoice_files: "Saving files and uploading to Drive...",
+    retry_upload_button: "Retry upload",
     review_complete: "Review complete",
     review_back_to_results: "Back to results",
     review_saved_invoices: "Saved invoices",
@@ -575,6 +582,8 @@ static ENGLISH: Messages = Messages {
     line_items_label: "Line items",
     drive_file_ids_label: "Drive IDs",
     uploaded_invoices_label: "Uploaded to Drive",
+    already_in_drive_label: "Already in Drive",
+    completed_partial_upload_label: "Missing file uploaded",
     skipped_invoices_label: "Skipped",
     unit_price_label: "Unit",
     taxed_short_label: "Taxed",
@@ -683,6 +692,9 @@ fn drive_upload_error_es(error: &DriveUploadError) -> String {
                 path.display()
             )
         }
+        DriveUploadError::IncompleteSearch => {
+            "Drive devolvi\u{f3} resultados incompletos. Vuelve a intentar la subida.".to_string()
+        }
     }
 }
 
@@ -715,6 +727,9 @@ fn drive_upload_error_en(error: &DriveUploadError) -> String {
                 "Could not determine the file name for `{}`.",
                 path.display()
             )
+        }
+        DriveUploadError::IncompleteSearch => {
+            "Drive returned incomplete results. Try uploading again.".to_string()
         }
     }
 }

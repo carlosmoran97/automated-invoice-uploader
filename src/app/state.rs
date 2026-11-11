@@ -204,6 +204,7 @@ impl AppState {
     }
 
     fn next_review(&mut self) -> Option<CandidateEmail> {
+        self.error = None;
         match self.context.emails.get(self.context.index) {
             Some(email) => {
                 self.review = ReviewState::Loading;
@@ -224,8 +225,16 @@ impl AppState {
             return None;
         };
         let review = review.clone();
+        self.error = None;
         self.review = ReviewState::Saving(review.clone());
         Some(*review)
+    }
+
+    pub fn fail_save(&mut self, error: String) {
+        if let ReviewState::Saving(review) = &self.review {
+            self.review = ReviewState::Ready(review.clone());
+            self.error = Some(error);
+        }
     }
 
     pub fn skip_review(&mut self) -> Option<CandidateEmail> {
@@ -368,6 +377,10 @@ mod tests {
         assert!(state.begin_save().is_none());
         assert!(state.skip_review().is_none());
         assert!(!state.navigate(Screen::Home));
+        state.fail_save("PDF upload failed".into());
+        assert_eq!(state.error.as_deref(), Some("PDF upload failed"));
+        assert_eq!(state.begin_save().unwrap().email.id, "a");
+        assert!(state.error.is_none());
         state.finish_save(SavedInvoiceFiles {
             json_path: "test.json".into(),
             pdf_path: "test.pdf".into(),

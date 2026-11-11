@@ -9,13 +9,16 @@ impl App {
         let context = &self.state.context;
         let mut folders = BTreeMap::<_, Vec<_>>::new();
         let mut uploaded = 0;
+        let mut already_in_drive = 0;
         for (index, invoice) in context.processed.iter().enumerate() {
-            let folder = invoice
-                .files
-                .drive_upload
-                .as_ref()
-                .map(|upload| (upload.folder_path.as_str(), upload.folder_id.as_str()));
-            uploaded += usize::from(folder.is_some());
+            let folder = invoice.files.drive_upload.as_ref().map(|upload| {
+                if upload.reused_files == 2 {
+                    already_in_drive += 1;
+                } else {
+                    uploaded += 1;
+                }
+                (upload.folder_path.as_str(), upload.folder_id.as_str())
+            });
             folders.entry(folder).or_default().push((index, invoice));
         }
 
@@ -43,6 +46,13 @@ impl App {
                                 .flex()
                                 .gap_4()
                                 .child(summary_count(text.uploaded_invoices_label, uploaded, true))
+                                .when(already_in_drive > 0, |s| {
+                                    s.child(summary_count(
+                                        text.already_in_drive_label,
+                                        already_in_drive,
+                                        false,
+                                    ))
+                                })
                                 .child(summary_count(
                                     text.skipped_invoices_label,
                                     context.skipped,
@@ -123,6 +133,15 @@ impl App {
     fn invoice_row(&self, index: usize, invoice: &ProcessedInvoice, cx: &mut Context<Self>) -> Div {
         let text = self.text();
         let files = &invoice.files;
+        let upload_status =
+            files
+                .drive_upload
+                .as_ref()
+                .and_then(|upload| match upload.reused_files {
+                    2 => Some(text.already_in_drive_label),
+                    1 => Some(text.completed_partial_upload_label),
+                    _ => None,
+                });
         let expanded = self.expanded_invoices.contains(&index);
         let issuer = if invoice.issuer.trim().is_empty() {
             text.review_unknown_issuer
@@ -162,7 +181,15 @@ impl App {
                                     .text_size(px(12.))
                                     .text_color(rgb(MUTED))
                                     .child(reference),
-                            ),
+                            )
+                            .when_some(upload_status, |s, status| {
+                                s.child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(rgb(MUTED))
+                                        .child(status),
+                                )
+                            }),
                     )
                     .child(
                         div()

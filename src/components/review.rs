@@ -71,6 +71,9 @@ impl App {
         match &self.state.review {
             ReviewState::Loading => body.child(notice(text.loading_invoice, false)),
             ReviewState::Ready(review) | ReviewState::Saving(review) => body
+                .when_some(self.state.error.as_ref(), |s, error| {
+                    s.child(notice(error.clone(), true))
+                })
                 .when(matches!(self.state.review, ReviewState::Saving(_)), |s| {
                     s.child(notice(text.saving_invoice_files, false))
                 })
@@ -220,7 +223,11 @@ impl App {
                     ))
                     .child(button(
                         "accept",
-                        text.accept_upload_button,
+                        if self.state.error.is_some() {
+                            text.retry_upload_button
+                        } else {
+                            text.accept_upload_button
+                        },
                         true,
                         ready,
                         UiAction::Accept,

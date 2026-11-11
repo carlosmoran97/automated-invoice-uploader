@@ -1,8 +1,13 @@
-use crate::{domain::invoice::InvoiceSummary, services::invoice_files::SavedInvoiceFiles};
+use crate::{
+    domain::invoice::InvoiceSummary,
+    services::invoice_files::{SavedInvoiceFiles, sanitize_filename},
+};
+use md5::{Digest, Md5};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
-    fmt, io,
+    collections::HashMap,
+    fmt, fs, io,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -10,6 +15,7 @@ use std::{
 pub const DEFAULT_ROOT_FOLDER_NAME: &str = "CARLOS ROLANDO MORAN CAMPOS";
 const PURCHASES_FOLDER_NAME: &str = "Compras";
 const FOLDER_MIME_TYPE: &str = "application/vnd.google-apps.folder";
+const GENERATION_CODE_PROPERTY: &str = "dteGenerationCode";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UploadedInvoiceFiles {
@@ -17,6 +23,7 @@ pub struct UploadedInvoiceFiles {
     pub folder_id: String,
     pub json_file_id: String,
     pub pdf_file_id: String,
+    pub reused_files: usize,
 }
 
 #[derive(Debug)]
@@ -38,6 +45,7 @@ pub enum DriveUploadError {
     MissingFileName {
         path: PathBuf,
     },
+    IncompleteSearch,
 }
 
 pub trait CommandRunner {
@@ -77,8 +85,26 @@ impl<R: CommandRunner> DriveUploadService<R> {
         let month_id = self.find_or_create_folder(&period.month_name, &year_id)?;
         let purchases_id = self.find_or_create_folder(PURCHASES_FOLDER_NAME, &month_id)?;
 
-        let json_file_id = self.upload_file(&files.json_path, &purchases_id, "application/json")?;
-        let pdf_file_id = self.upload_file(&files.pdf_path, &purchases_id, "application/pdf")?;
+        let prefix = sanitize_filename(&invoice.file_slug());
+        let generation_code = invoice.generation_code.to_ascii_uppercase();
+        // Drive limits the combined property key and value to 124 UTF-8 bytes.
+        let generation_code = (!generation_code.is_empty()
+            && generation_code.len() + GENERATION_CODE_PROPERTY.len() <= 124)
+            .then_some(generation_code.as_str());
+        let (json_file_id, json_reused) = self.find_or_upload_file(
+            &files.json_path,
+            &purchases_id,
+            "application/json",
+            &prefix,
+            generation_code,
+        )?;
+        let (pdf_file_id, pdf_reused) = self.find_or_upload_file(
+            &files.pdf_path,
+            &purchases_id,
+            "application/pdf",
+            &prefix,
+            generation_code,
+        )?;
 
         Ok(UploadedInvoiceFiles {
             folder_path: format!(
@@ -88,6 +114,7 @@ impl<R: CommandRunner> DriveUploadService<R> {
             folder_id: purchases_id,
             json_file_id,
             pdf_file_id,
+            reused_files: usize::from(json_reused) + usize::from(pdf_reused),
         })
     }
 
@@ -96,42 +123,53 @@ impl<R: CommandRunner> DriveUploadService<R> {
         name: &str,
         parent_id: &str,
     ) -> Result<String, DriveUploadError> {
-        if let Some(folder) = self.find_folder(name, parent_id)? {
+        let query = format!(
+            "mimeType='{FOLDER_MIME_TYPE}' and name='{}' and '{}' in parents and trashed=false",
+            escape_drive_query_value(name),
+            escape_drive_query_value(parent_id),
+        );
+        if let Some(folder) = self.find_file(&query, "id", |_| true)? {
             return Ok(folder.id);
         }
 
         self.create_folder(name, parent_id)
     }
 
-    fn find_folder(
+    fn find_file(
         &self,
-        name: &str,
-        parent_id: &str,
+        query: &str,
+        fields: &str,
+        matches: impl Fn(&DriveFile) -> bool,
     ) -> Result<Option<DriveFile>, DriveUploadError> {
-        let params = json!({
-            "q": format!(
-                "mimeType='{}' and name='{}' and '{}' in parents and trashed=false",
-                FOLDER_MIME_TYPE,
-                escape_drive_query_value(name),
-                escape_drive_query_value(parent_id)
-            ),
-            "fields": "files(id,name,mimeType)",
-            "pageSize": 10,
+        let mut params = json!({
+            "q": query,
+            "fields": format!("nextPageToken,incompleteSearch,files({fields})"),
+            "pageSize": 100,
             "supportsAllDrives": true,
             "includeItemsFromAllDrives": true,
-        })
-        .to_string();
-        let args = vec![
-            "drive".to_string(),
-            "files".to_string(),
-            "list".to_string(),
-            "--params".to_string(),
-            params,
-        ];
-        let stdout = self.runner.run(&args)?;
-        let response: DriveFileList = parse_json(&stdout, format!("folder lookup `{name}`"))?;
+        });
+        loop {
+            let args = [
+                "drive".to_string(),
+                "files".to_string(),
+                "list".to_string(),
+                "--params".to_string(),
+                params.to_string(),
+            ];
+            let stdout = self.runner.run(&args)?;
+            let response: DriveFileList = parse_json(&stdout, "Drive file lookup".into())?;
 
-        Ok(response.files.into_iter().next())
+            if let Some(file) = response.files.into_iter().find(&matches) {
+                return Ok(Some(file));
+            }
+            if response.incomplete_search {
+                return Err(DriveUploadError::IncompleteSearch);
+            }
+            let Some(token) = response.next_page_token else {
+                return Ok(None);
+            };
+            params["pageToken"] = json!(token);
+        }
     }
 
     fn create_folder(&self, name: &str, parent_id: &str) -> Result<String, DriveUploadError> {
@@ -161,11 +199,55 @@ impl<R: CommandRunner> DriveUploadService<R> {
         Ok(file.id)
     }
 
+    fn find_or_upload_file(
+        &self,
+        path: &Path,
+        parent_id: &str,
+        content_type: &str,
+        prefix: &str,
+        generation_code: Option<&str>,
+    ) -> Result<(String, bool), DriveUploadError> {
+        let mut checksum = Md5::new();
+        io::copy(
+            &mut fs::File::open(path).map_err(DriveUploadError::Io)?,
+            &mut checksum,
+        )
+        .map_err(DriveUploadError::Io)?;
+        let checksum = format!("{:x}", checksum.finalize());
+
+        // Older uploads have the invoice prefix but no generation code metadata.
+        let legacy = format!("name contains '{}-'", escape_drive_query_value(prefix));
+        let identity = match generation_code {
+            Some(code) => format!(
+                "({legacy} or appProperties has {{ key='{GENERATION_CODE_PROPERTY}' and value='{}' }})",
+                escape_drive_query_value(code),
+            ),
+            None => legacy,
+        };
+        let query = format!(
+            "'{}' in parents and trashed=false and mimeType='{content_type}' and {identity}",
+            escape_drive_query_value(parent_id),
+        );
+        let existing = self.find_file(&query, "id,md5Checksum,appProperties", |file| match file
+            .app_properties
+            .get(GENERATION_CODE_PROPERTY)
+        {
+            Some(code) => Some(code.as_str()) == generation_code,
+            None => file.md5_checksum.as_deref() == Some(checksum.as_str()),
+        })?;
+        if let Some(file) = existing {
+            return Ok((file.id, true));
+        }
+        let id = self.upload_file(path, parent_id, content_type, generation_code)?;
+        Ok((id, false))
+    }
+
     fn upload_file(
         &self,
         path: &Path,
         parent_id: &str,
         content_type: &str,
+        generation_code: Option<&str>,
     ) -> Result<String, DriveUploadError> {
         let filename = path
             .file_name()
@@ -178,11 +260,14 @@ impl<R: CommandRunner> DriveUploadService<R> {
             "supportsAllDrives": true,
         })
         .to_string();
-        let body = json!({
+        let mut body = json!({
             "name": filename,
+            "mimeType": content_type,
             "parents": [parent_id],
-        })
-        .to_string();
+        });
+        if let Some(code) = generation_code {
+            body["appProperties"] = json!({ GENERATION_CODE_PROPERTY: code });
+        }
         let args = vec![
             "drive".to_string(),
             "files".to_string(),
@@ -190,7 +275,7 @@ impl<R: CommandRunner> DriveUploadService<R> {
             "--params".to_string(),
             params,
             "--json".to_string(),
-            body,
+            body.to_string(),
             "--upload".to_string(),
             path.display().to_string(),
             "--upload-content-type".to_string(),
@@ -264,6 +349,9 @@ impl fmt::Display for DriveUploadError {
                     path.display()
                 )
             }
+            Self::IncompleteSearch => {
+                write!(formatter, "Drive returned incomplete search results.")
+            }
         }
     }
 }
@@ -271,14 +359,22 @@ impl fmt::Display for DriveUploadError {
 impl std::error::Error for DriveUploadError {}
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DriveFileList {
     #[serde(default)]
     files: Vec<DriveFile>,
+    next_page_token: Option<String>,
+    #[serde(default)]
+    incomplete_search: bool,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct DriveFile {
     id: String,
+    md5_checksum: Option<String>,
+    #[serde(default)]
+    app_properties: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -347,10 +443,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::invoice::InvoiceSummary;
     use std::{
         collections::VecDeque,
-        path::PathBuf,
         sync::{Arc, Mutex},
     };
 
@@ -376,34 +470,110 @@ mod tests {
             r#"{"id":"month-folder"}"#,
             r#"{"files":[]}"#,
             r#"{"id":"purchases-folder"}"#,
+            r#"{"files":[]}"#,
             r#"{"id":"json-file"}"#,
+            r#"{"files":[]}"#,
             r#"{"id":"pdf-file"}"#,
         ]);
         let calls = runner.calls.clone();
         let service = DriveUploadService::new(runner);
-        let mut invoice = empty_invoice();
-        invoice.issue_date = "2026-05-24".to_string();
-        let files = SavedInvoiceFiles {
-            json_path: PathBuf::from("downloaded_invoices/invoice.json"),
-            pdf_path: PathBuf::from("downloaded_invoices/invoice.pdf"),
-            drive_upload: None,
-        };
+        let (invoice, files, _directory) = invoice_files();
 
         let upload = service
-            .upload_invoice_files(&invoice, &files, DEFAULT_ROOT_FOLDER_NAME)
+            .upload_invoice_files(&invoice, &files, "Test account")
             .unwrap();
 
-        assert_eq!(
-            upload.folder_path,
-            "CARLOS ROLANDO MORAN CAMPOS/2026/Mayo/Compras"
-        );
+        assert_eq!(upload.folder_path, "Test account/2026/Mayo/Compras");
         assert_eq!(upload.json_file_id, "json-file");
         assert_eq!(upload.pdf_file_id, "pdf-file");
-        assert_eq!(calls.lock().unwrap().len(), 10);
+        assert_eq!(upload.reused_files, 0);
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 12);
+        for (index, mime_type) in [(9, "application/json"), (11, "application/pdf")] {
+            let body: serde_json::Value = serde_json::from_str(&calls[index][6]).unwrap();
+            assert_eq!(body["mimeType"], mime_type);
+            assert_eq!(body["appProperties"][GENERATION_CODE_PROPERTY], CODE);
+        }
     }
 
+    #[test]
+    fn reuses_both_tagged_files_for_a_resent_invoice() {
+        let json = format!(
+            r#"{{"files":[{{"id":"existing-json","appProperties":{{"dteGenerationCode":"{CODE}"}}}}]}}"#
+        );
+        let pdf = format!(
+            r#"{{"files":[{{"id":"existing-pdf","appProperties":{{"dteGenerationCode":"{CODE}"}}}}]}}"#
+        );
+        let (service, calls) = existing_folder_service([json.as_str(), pdf.as_str()]);
+        let (invoice, files, _directory) = invoice_files();
+        let result = service
+            .upload_invoice_files(&invoice, &files, "Test account")
+            .unwrap();
+
+        assert_eq!(result.json_file_id, "existing-json");
+        assert_eq!(result.pdf_file_id, "existing-pdf");
+        assert_eq!(result.reused_files, 2);
+        let calls = calls.lock().unwrap();
+        assert!(calls.iter().all(|call| call[2] == "list"));
+        for (index, mime_type) in [(4, "application/json"), (5, "application/pdf")] {
+            let params: serde_json::Value = serde_json::from_str(&calls[index][4]).unwrap();
+            let query = params["q"].as_str().unwrap();
+            assert!(query.contains("'purchases-folder' in parents and trashed=false"));
+            assert!(query.contains(&format!("mimeType='{mime_type}'")));
+            assert!(query.contains(&format!(
+                "appProperties has {{ key='dteGenerationCode' and value='{CODE}' }}"
+            )));
+        }
+    }
+
+    #[test]
+    fn uploads_only_the_missing_pdf_when_a_legacy_json_already_exists() {
+        let checksum = format!("{:x}", Md5::digest(JSON_BYTES));
+        let first_page = r#"{"files":[{"id":"different-json","md5Checksum":"different"}],"nextPageToken":"next"}"#;
+        let next_page =
+            format!(r#"{{"files":[{{"id":"legacy-json","md5Checksum":"{checksum}"}}]}}"#);
+        let (service, calls) = existing_folder_service([
+            first_page,
+            next_page.as_str(),
+            r#"{"files":[]}"#,
+            r#"{"id":"new-pdf"}"#,
+        ]);
+        let (invoice, files, _directory) = invoice_files();
+        let result = service
+            .upload_invoice_files(&invoice, &files, "Test account")
+            .unwrap();
+
+        assert_eq!(result.json_file_id, "legacy-json");
+        assert_eq!(result.pdf_file_id, "new-pdf");
+        assert_eq!(result.reused_files, 1);
+        let calls = calls.lock().unwrap();
+        let next: serde_json::Value = serde_json::from_str(&calls[5][4]).unwrap();
+        assert_eq!(next["pageToken"], "next");
+        assert!(
+            next["q"]
+                .as_str()
+                .unwrap()
+                .contains("name contains 'DTE-TEST-'")
+        );
+        let creates: Vec<_> = calls.iter().filter(|call| call[2] == "create").collect();
+        assert_eq!(creates.len(), 1);
+        assert_eq!(creates[0][10], "application/pdf");
+    }
+
+    #[test]
+    fn does_not_create_files_when_drive_cannot_complete_the_lookup() {
+        let (service, calls) = existing_folder_service([r#"{"incompleteSearch":true}"#]);
+        let (invoice, files, _directory) = invoice_files();
+        let result = service.upload_invoice_files(&invoice, &files, "Test account");
+
+        assert!(matches!(result, Err(DriveUploadError::IncompleteSearch)));
+        assert!(calls.lock().unwrap().iter().all(|call| call[2] == "list"));
+    }
+
+    type Calls = Arc<Mutex<Vec<Vec<String>>>>;
+
     struct FakeRunner {
-        calls: Arc<Mutex<Vec<Vec<String>>>>,
+        calls: Calls,
         outputs: Mutex<VecDeque<String>>,
     }
 
@@ -432,38 +602,35 @@ mod tests {
         }
     }
 
-    fn empty_invoice() -> InvoiceSummary {
-        InvoiceSummary {
-            source_filename: String::new(),
-            document_type_code: String::new(),
-            document_type_name: String::new(),
-            is_ccf: true,
-            control_number: String::new(),
-            generation_code: String::new(),
-            issue_date: String::new(),
-            issue_time: String::new(),
-            currency: String::new(),
-            issuer_name: String::new(),
-            issuer_nit: String::new(),
-            issuer_nrc: String::new(),
-            receiver_name: String::new(),
-            receiver_nit: String::new(),
-            receiver_nrc: String::new(),
-            taxed_sales: String::new(),
-            exempt_sales: String::new(),
-            non_subject_sales: String::new(),
-            subtotal_sales: String::new(),
-            discount_total: String::new(),
-            subtotal: String::new(),
-            taxes: Vec::new(),
-            income_tax_retention: String::new(),
-            vat_retention: String::new(),
-            vat_perception: String::new(),
-            operation_total: String::new(),
-            total_to_pay: String::new(),
-            total_in_words: String::new(),
-            payment_condition: String::new(),
-            line_items: Vec::new(),
-        }
+    fn existing_folder_service<'a>(
+        file_responses: impl IntoIterator<Item = &'a str>,
+    ) -> (DriveUploadService<FakeRunner>, Calls) {
+        let outputs = [
+            r#"{"files":[{"id":"root-folder"}]}"#,
+            r#"{"files":[{"id":"year-folder"}]}"#,
+            r#"{"files":[{"id":"month-folder"}]}"#,
+            r#"{"files":[{"id":"purchases-folder"}]}"#,
+        ];
+        let runner = FakeRunner::new(outputs.into_iter().chain(file_responses).collect());
+        let calls = runner.calls.clone();
+        (DriveUploadService::new(runner), calls)
+    }
+
+    const CODE: &str = "01234567-89AB-CDEF-0123-456789ABCDEF";
+    const JSON_BYTES: &[u8] = br#"{"identificacion":{"numeroControl":"DTE-TEST","codigoGeneracion":"01234567-89ab-cdef-0123-456789abcdef","fecEmi":"2026-05-24"}}"#;
+
+    fn invoice_files() -> (InvoiceSummary, SavedInvoiceFiles, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let json_path = directory.path().join("DTE-TEST-invoice.json");
+        let pdf_path = directory.path().join("DTE-TEST-invoice.pdf");
+        fs::write(&json_path, JSON_BYTES).unwrap();
+        fs::write(&pdf_path, b"test PDF bytes").unwrap();
+        let invoice = InvoiceSummary::from_json_bytes("invoice.json", JSON_BYTES).unwrap();
+        let files = SavedInvoiceFiles {
+            json_path,
+            pdf_path,
+            drive_upload: None,
+        };
+        (invoice, files, directory)
     }
 }

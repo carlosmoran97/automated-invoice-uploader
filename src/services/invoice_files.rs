@@ -3,7 +3,8 @@ use crate::{
     services::{drive_upload::UploadedInvoiceFiles, gmail_search::DownloadedAttachment},
 };
 use std::{
-    fs, io,
+    fs,
+    io::{self, Write},
     path::{Path, PathBuf},
 };
 
@@ -25,11 +26,8 @@ pub fn save_invoice_files(
     fs::create_dir_all(directory)?;
 
     let prefix = sanitize_filename(&invoice.file_slug());
-    let json_path = unique_path(directory, &prefix, &json.filename);
-    let pdf_path = unique_path(directory, &prefix, &pdf.filename);
-
-    fs::write(&json_path, &json.bytes)?;
-    fs::write(&pdf_path, &pdf.bytes)?;
+    let json_path = save_attachment(directory, &prefix, json)?;
+    let pdf_path = save_attachment(directory, &prefix, pdf)?;
 
     Ok(SavedInvoiceFiles {
         json_path,
@@ -38,30 +36,45 @@ pub fn save_invoice_files(
     })
 }
 
-fn unique_path(directory: &Path, prefix: &str, filename: &str) -> PathBuf {
-    let filename = sanitize_filename(filename);
+fn save_attachment(
+    directory: &Path,
+    prefix: &str,
+    attachment: &DownloadedAttachment,
+) -> io::Result<PathBuf> {
+    let filename = sanitize_filename(&attachment.filename);
     let filename = if filename.is_empty() {
         "attachment".to_string()
     } else {
         filename
     };
-    let mut candidate = directory.join(format!("{prefix}-{filename}"));
+    let mut index = 1;
+    loop {
+        let path = if index == 1 {
+            directory.join(format!("{prefix}-{filename}"))
+        } else {
+            directory.join(format!("{prefix}-{index}-{filename}"))
+        };
+        match fs::read(&path) {
+            Ok(existing) if existing == attachment.bytes => return Ok(path),
+            Ok(_) => {
+                index += 1;
+                continue;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
 
-    if !candidate.exists() {
-        return candidate;
-    }
-
-    for index in 2.. {
-        candidate = directory.join(format!("{prefix}-{index}-{filename}"));
-        if !candidate.exists() {
-            return candidate;
+        let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+        temporary.write_all(&attachment.bytes)?;
+        match temporary.persist_noclobber(&path) {
+            Ok(_) => return Ok(path),
+            Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.error),
         }
     }
-
-    unreachable!("unbounded loop returns before exhausting usize")
 }
 
-fn sanitize_filename(value: &str) -> String {
+pub(super) fn sanitize_filename(value: &str) -> String {
     let sanitized = value
         .chars()
         .map(|character| match character {
@@ -86,5 +99,30 @@ mod tests {
     #[test]
     fn sanitizes_unsafe_filename_characters() {
         assert_eq!(sanitize_filename("../DTE 03:ABC.json"), "DTE_03_ABC.json");
+    }
+
+    #[test]
+    fn reuses_identical_attachments_but_preserves_different_contents() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut attachment = DownloadedAttachment {
+            filename: "invoice.pdf".into(),
+            bytes: b"original".to_vec(),
+        };
+        let original = save_attachment(directory.path(), "DTE-TEST", &attachment).unwrap();
+        assert_eq!(
+            save_attachment(directory.path(), "DTE-TEST", &attachment).unwrap(),
+            original
+        );
+
+        attachment.bytes = b"different PDF".to_vec();
+        let other = save_attachment(directory.path(), "DTE-TEST", &attachment).unwrap();
+        assert_ne!(other, original);
+        assert_eq!(fs::read(&original).unwrap(), b"original");
+        assert_eq!(fs::read(&other).unwrap(), attachment.bytes);
+        assert_eq!(
+            save_attachment(directory.path(), "DTE-TEST", &attachment).unwrap(),
+            other
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
     }
 }

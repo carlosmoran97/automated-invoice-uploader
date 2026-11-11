@@ -12,6 +12,8 @@ async-channel = "2"
 futures = { version = "0.3", default-features = false }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+md-5 = "0.10.6"
+tempfile = "3"
 time = { version = "0.3.47", features = ["local-offset"] }
 image = { version = "0.25", default-features = false }
 

@@ -379,8 +379,10 @@ dependencies = [
  "futures",
  "gpui",
  "image",
+ "md-5",
  "serde",
  "serde_json",
+ "tempfile",
  "time",
  "unicode-segmentation",
 ]
