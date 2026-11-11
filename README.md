@@ -32,10 +32,13 @@ The light theme uses blue, white, and gray inspired by the official
    November 10, 2026 selects October 1–31, 2026.
 4. Edit the optional Gmail DTE filter, initially `DTE-03`, and click Search.
 5. Browse matching emails and their details. Every result starts selected;
-   toggle individual checkboxes or select/deselect all, then Review selected.
+   toggle individual checkboxes or select/deselect all, then choose **Review selected**
+   in the fixed action bar.
 6. Review each invoice's identity, issuer, receiver, totals, taxes, and line items.
-   **Accept and upload** downloads the PDF, saves both files locally, and uploads
-   them to Drive. **Skip** advances without processing the invoice.
+   The PDF opens automatically beside the summary, with page controls for documents
+   that have more than one page. **Accept and upload** saves both files locally and
+   uploads them to Drive. **Skip** advances without processing the invoice. Both
+   actions stay visible as you scroll.
 7. The completion screen lists processed/skipped counts, saved paths, and Drive
    destinations.
 

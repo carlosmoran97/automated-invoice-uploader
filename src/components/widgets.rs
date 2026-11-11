@@ -84,6 +84,20 @@ pub fn notice(message: impl Into<SharedString>, error: bool) -> Div {
         .child(message.into())
 }
 
+pub fn action_bar() -> Div {
+    div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .px_8()
+        .py_3()
+        .bg(rgb(0xffffff))
+        .border_t_1()
+        .border_color(rgb(BORDER))
+}
+
 pub fn button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,

@@ -3,7 +3,7 @@ mod settings;
 pub(crate) mod state;
 
 use self::{
-    review::{load_invoice_review, review_error_message, save_invoice_review},
+    review::{ReviewPdf, load_invoice_review, review_error_message, save_invoice_review},
     state::*,
 };
 use crate::{
@@ -20,8 +20,8 @@ use crate::{
     },
 };
 use gpui::{
-    Context, Div, Entity, FocusHandle, FontWeight, IntoElement, KeyDownEvent, ScrollStrategy,
-    UniformListScrollHandle, Window, actions, div, prelude::*, px, rgb,
+    Context, Div, Entity, FocusHandle, FontWeight, IntoElement, KeyDownEvent, ScrollHandle,
+    ScrollStrategy, UniformListScrollHandle, Window, actions, div, prelude::*, px, rgb,
 };
 use time::OffsetDateTime;
 
@@ -35,6 +35,7 @@ pub(crate) enum UiAction {
     ToggleAll,
     Accept,
     Skip,
+    PdfPage(usize),
     SaveSettings,
     Language(Language),
     OpenCalendar(bool),
@@ -56,6 +57,8 @@ pub struct App {
     focus: FocusHandle,
     pub(crate) results_focus: FocusHandle,
     pub(crate) results_scroll: UniformListScrollHandle,
+    pub(crate) review_scroll: ScrollHandle,
+    pub(crate) review_pdf: ReviewPdf,
 }
 
 impl App {
@@ -120,6 +123,8 @@ impl App {
             focus,
             results_focus: cx.focus_handle().tab_stop(true),
             results_scroll: UniformListScrollHandle::default(),
+            review_scroll: ScrollHandle::default(),
+            review_pdf: ReviewPdf::default(),
         };
         app.authenticate(cx);
         app
@@ -256,21 +261,25 @@ impl App {
             UiAction::Accept => {
                 if let Some(review) = self.state.begin_save() {
                     let settings = self.state.settings.clone();
+                    let pdf = self.review_pdf.attachment();
                     let worker = cx
                         .background_executor()
-                        .spawn(async move { save_invoice_review(review, settings) });
+                        .spawn(save_invoice_review(review, settings, pdf));
                     cx.spawn(async move |this, cx| {
                         let result = worker.await;
                         let _ = this.update(cx, |this, cx| {
                             match result {
                                 Ok(files) => {
+                                    this.reset_review_view(None, cx);
                                     if let Some(email) = this.state.finish_save(files) {
                                         this.load_review(email, cx);
                                     }
                                 }
                                 Err(error) => {
-                                    this.state.review =
-                                        ReviewState::Error(review_error_message(error, this.text()))
+                                    this.state.review = ReviewState::Error(review_error_message(
+                                        &error,
+                                        this.text(),
+                                    ))
                                 }
                             }
                             cx.notify();
@@ -280,10 +289,18 @@ impl App {
                 }
             }
             UiAction::Skip => {
-                if let Some(email) = self.state.skip_review() {
-                    self.load_review(email, cx);
+                if matches!(
+                    self.state.review,
+                    ReviewState::Ready(_) | ReviewState::Error(_)
+                ) && self.state.screen == Screen::Review
+                {
+                    self.reset_review_view(Some(window), cx);
+                    if let Some(email) = self.state.skip_review() {
+                        self.load_review(email, cx);
+                    }
                 }
             }
+            UiAction::PdfPage(number) => self.load_pdf_page(number, cx),
             UiAction::SaveSettings => {
                 if self.state.screen == Screen::Settings && !self.state.busy() {
                     let input = SettingsInput {
@@ -359,7 +376,14 @@ impl App {
         cx.notify();
     }
 
-    fn load_review(&self, email: CandidateEmail, cx: &mut Context<Self>) {
+    fn reset_review_view(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) {
+        self.review_pdf.clear(window, cx);
+        self.review_scroll.set_offset(Default::default());
+    }
+
+    fn load_review(&mut self, email: CandidateEmail, cx: &mut Context<Self>) {
+        self.review_pdf.download(email.clone(), cx);
+        self.load_pdf_page(1, cx);
         let worker = cx
             .background_executor()
             .spawn(async move { load_invoice_review(email) });
@@ -368,7 +392,7 @@ impl App {
             let _ = this.update(cx, |this, cx| {
                 this.state.review = match outcome {
                     Ok(review) => ReviewState::Ready(Box::new(review)),
-                    Err(error) => ReviewState::Error(review_error_message(error, this.text())),
+                    Err(error) => ReviewState::Error(review_error_message(&error, this.text())),
                 };
                 cx.notify();
             });
@@ -435,10 +459,16 @@ impl Render for App {
         let body = match self.state.screen {
             Screen::Startup => self.render_startup(cx).into_any_element(),
             Screen::Home => self.render_home(cx).into_any_element(),
-            Screen::Results => self.render_results(window, cx).into_any_element(),
-            Screen::Review => self.render_review(cx).into_any_element(),
+            Screen::Results => self.render_results(cx).into_any_element(),
+            Screen::Review => self.render_review(window, cx).into_any_element(),
             Screen::Settings => self.render_settings(cx).into_any_element(),
         };
+        let actions = match self.state.screen {
+            Screen::Results => Some(self.results_actions(cx)),
+            Screen::Review => Some(self.review_actions(cx)),
+            _ => None,
+        };
+        let fixed_actions = actions.is_some();
         div()
             .id("invoice-app")
             .track_focus(&self.focus)
@@ -456,6 +486,7 @@ impl Render for App {
             .child(
                 div()
                     .flex()
+                    .flex_shrink_0()
                     .items_center()
                     .justify_between()
                     .px_8()
@@ -517,25 +548,29 @@ impl Render for App {
                     .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .when(fixed_actions, |s| s.overflow_hidden())
+                    .when(!fixed_actions, |s| s.overflow_y_scroll())
                     .p_8()
                     .child(body),
             )
-            .child(
-                div()
-                    .px_8()
-                    .py_3()
-                    .border_t_1()
-                    .border_color(rgb(BORDER))
-                    .text_size(px(12.))
-                    .text_color(rgb(MUTED))
-                    .child(
-                        if matches!(self.state.authentication, AuthenticationState::Ready) {
-                            text.connected_label
-                        } else {
-                            text.connection_title
-                        },
-                    ),
-            )
+            .children(actions)
+            .when(!fixed_actions, |s| {
+                s.child(
+                    div()
+                        .px_8()
+                        .py_3()
+                        .border_t_1()
+                        .border_color(rgb(BORDER))
+                        .text_size(px(12.))
+                        .text_color(rgb(MUTED))
+                        .child(
+                            if matches!(self.state.authentication, AuthenticationState::Ready) {
+                                text.connected_label
+                            } else {
+                                text.connection_title
+                            },
+                        ),
+                )
+            })
     }
 }

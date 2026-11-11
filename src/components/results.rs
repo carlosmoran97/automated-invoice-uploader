@@ -1,18 +1,17 @@
 use super::widgets::*;
 use crate::app::{App, UiAction, state::Screen};
 use gpui::{
-    Context, Div, FontWeight, MouseButton, Stateful, Window, div, prelude::*, px, rgb, uniform_list,
+    Context, Div, FontWeight, ListSizingBehavior, MouseButton, Stateful, div, prelude::*, px, rgb,
+    uniform_list,
 };
 
 impl App {
-    pub(crate) fn render_results(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_results(&self, cx: &mut Context<Self>) -> Div {
         let text = self.text();
-        let list_height = (window.viewport_size().height - px(400.)).clamp(px(180.), px(410.));
         let count = self.state.results.len();
-        let selected = self.state.selected_ids.len();
         let details = card()
             .id("email-details")
-            .max_h(list_height + px(46.))
+            .min_h_0()
             .overflow_y_scroll()
             .w(px(320.))
             .flex_shrink_0()
@@ -54,8 +53,11 @@ impl App {
         let list = div()
             .id("email-list")
             .track_focus(&self.results_focus)
+            .flex()
+            .flex_col()
             .flex_1()
             .min_w_0()
+            .min_h_0()
             .bg(rgb(0xffffff))
             .rounded_lg()
             .border_1()
@@ -69,6 +71,7 @@ impl App {
             .focus(|s| s.border_color(rgb(BLUE)))
             .child(
                 div()
+                    .flex_shrink_0()
                     .px_4()
                     .py_3()
                     .font_weight(FontWeight::SEMIBOLD)
@@ -96,7 +99,9 @@ impl App {
                             }),
                         )
                         .w_full()
-                        .h(list_height)
+                        .flex_1()
+                        .min_h_0()
+                        .with_sizing_behavior(ListSizingBehavior::Auto)
                         .track_scroll(self.results_scroll.clone()),
                     )
                 }
@@ -104,67 +109,80 @@ impl App {
         div()
             .flex()
             .flex_col()
+            .flex_1()
+            .min_h_0()
             .gap_6()
-            .child(heading(
-                text.results_title,
-                format!(
-                    "{}  \u{b7}  {}",
-                    text.candidate_count(count),
-                    self.state.search_period
-                ),
-            ))
+            .child(
+                heading(
+                    text.results_title,
+                    format!(
+                        "{}  \u{b7}  {}",
+                        text.candidate_count(count),
+                        self.state.search_period
+                    ),
+                )
+                .flex_shrink_0(),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .gap_5()
+                    .child(list)
+                    .child(details),
+            )
+    }
+
+    pub(crate) fn results_actions(&self, cx: &mut Context<Self>) -> Div {
+        let text = self.text();
+        let count = self.state.results.len();
+        let selected = self.state.selected_ids.len();
+        action_bar()
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .gap_4()
+                    .child(button(
+                        "results-back",
+                        text.back_button,
+                        false,
+                        true,
+                        UiAction::Navigate(Screen::Home),
+                        cx,
+                    ))
                     .child(
                         div()
                             .text_color(rgb(MUTED))
                             .child(text.selected_candidate_count(selected)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .gap_3()
-                            .child(button(
-                                "toggle-all",
-                                if selected == count {
-                                    text.deselect_all_button
-                                } else {
-                                    text.select_all_button
-                                },
-                                false,
-                                count > 0,
-                                UiAction::ToggleAll,
-                                cx,
-                            ))
-                            .child(button(
-                                "review",
-                                text.review_selected_button,
-                                true,
-                                selected > 0,
-                                UiAction::ReviewSelected,
-                                cx,
-                            )),
                     ),
             )
             .child(
                 div()
                     .flex()
-                    .items_start()
-                    .gap_5()
-                    .child(list)
-                    .child(details),
+                    .gap_3()
+                    .child(button(
+                        "toggle-all",
+                        if selected == count {
+                            text.deselect_all_button
+                        } else {
+                            text.select_all_button
+                        },
+                        false,
+                        count > 0,
+                        UiAction::ToggleAll,
+                        cx,
+                    ))
+                    .child(button(
+                        "review",
+                        text.review_selected_button,
+                        true,
+                        selected > 0,
+                        UiAction::ReviewSelected,
+                        cx,
+                    )),
             )
-            .child(div().flex().child(button(
-                "results-back",
-                text.back_button,
-                false,
-                true,
-                UiAction::Navigate(Screen::Home),
-                cx,
-            )))
     }
 
     fn email_row(&self, index: usize, cx: &mut Context<Self>) -> Stateful<Div> {

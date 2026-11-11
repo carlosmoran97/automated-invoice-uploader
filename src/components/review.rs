@@ -6,85 +6,81 @@ use crate::{
     },
     domain::invoice::InvoiceSummary,
 };
-use gpui::{Context, Div, FontWeight, div, prelude::*, px, rgb};
+use gpui::{Context, Div, FontWeight, Pixels, Window, div, img, prelude::*, px, rgb};
 
 impl App {
-    pub(crate) fn render_review(&self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn render_review(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let text = self.text();
         let context = &self.state.context;
-        let complete = matches!(self.state.review, ReviewState::Complete);
-        let subtitle = if complete {
+        let email = context.emails.get(context.index);
+        let subtitle = if email.is_some() {
+            text.review_progress(context.index, context.emails.len())
+        } else {
             format!(
                 "{}: {}  \u{b7}  {}: {}",
                 text.processed_label, context.processed, text.skipped_label, context.skipped
             )
-        } else {
-            text.review_progress(context.index, context.emails.len())
         };
-        let mut body = div()
+        let details = div()
+            .id("review-details")
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.review_scroll)
+            .child(self.review_details());
+
+        div()
             .flex()
             .flex_col()
-            .gap_5()
-            .child(heading(text.review_title, subtitle));
-        if let Some(email) = context.emails.get(context.index).filter(|_| !complete) {
-            body = body.child(
+            .flex_1()
+            .min_h_0()
+            .gap_4()
+            .child(heading(text.review_title, subtitle).flex_shrink_0())
+            .when_some(email, |s, email| {
+                s.child(
+                    div()
+                        .flex_shrink_0()
+                        .truncate()
+                        .text_color(rgb(MUTED))
+                        .child(format!("{} \u{b7} {}", email.from, email.subject)),
+                )
+            })
+            .child(
                 div()
-                    .text_color(rgb(MUTED))
-                    .child(format!("{} \u{b7} {}", email.from, email.subject)),
-            );
-        }
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .gap_5()
+                    .child(details)
+                    .when_some(email, |s, email| {
+                        let pdf_width = (window.viewport_size().width - px(84.)) * 0.52;
+                        let filename = email
+                            .pdf_attachments
+                            .first()
+                            .map(|file| file.filename.as_str());
+                        s.child(self.pdf_panel(pdf_width, filename, cx))
+                    }),
+            )
+    }
+
+    fn review_details(&self) -> Div {
+        let text = self.text();
+        let body = div().flex().flex_col().gap_4();
         match &self.state.review {
             ReviewState::Loading => body.child(notice(text.loading_invoice, false)),
-            ReviewState::Ready(review) | ReviewState::Saving(review) => {
-                let saving = matches!(self.state.review, ReviewState::Saving(_));
-                body.when(saving, |s| {
+            ReviewState::Ready(review) | ReviewState::Saving(review) => body
+                .when(matches!(self.state.review, ReviewState::Saving(_)), |s| {
                     s.child(notice(text.saving_invoice_files, false))
                 })
                 .when(!review.invoice.is_ccf, |s| {
                     s.child(notice(text.ccf_warning, true))
                 })
-                .child(self.invoice_details(&review.invoice))
-                .child(
-                    card()
-                        .child(div().text_color(rgb(MUTED)).child(text.review_manual_hint))
-                        .child(
-                            div()
-                                .flex()
-                                .gap_3()
-                                .justify_end()
-                                .child(button(
-                                    "skip",
-                                    text.skip_button,
-                                    false,
-                                    !saving,
-                                    UiAction::Skip,
-                                    cx,
-                                ))
-                                .child(button(
-                                    "accept",
-                                    text.accept_upload_button,
-                                    true,
-                                    !saving,
-                                    UiAction::Accept,
-                                    cx,
-                                )),
-                        ),
-                )
-            }
-            ReviewState::Error(error) => {
-                body.child(notice(error.clone(), true))
-                    .child(div().flex().justify_end().child(button(
-                        "skip-error",
-                        text.skip_button,
-                        false,
-                        true,
-                        UiAction::Skip,
-                        cx,
-                    )))
-            }
+                .child(self.invoice_details(&review.invoice)),
+            ReviewState::Error(error) => body.child(notice(error.clone(), true)),
             ReviewState::Complete | ReviewState::Idle => body
                 .child(notice(text.review_complete, false))
-                .children(context.saved_files.iter().map(|files| {
+                .children(self.state.context.saved_files.iter().map(|files| {
                     card()
                         .child(detail("JSON", files.json_path.display().to_string()))
                         .child(detail("PDF", files.pdf_path.display().to_string()))
@@ -98,16 +94,154 @@ impl App {
                                     ),
                                 ))
                         })
-                }))
-                .child(div().flex().child(button(
-                    "review-back",
-                    text.back_button,
-                    true,
-                    true,
-                    UiAction::Navigate(Screen::Results),
-                    cx,
-                ))),
+                })),
         }
+    }
+
+    fn pdf_panel(&self, width: Pixels, filename: Option<&str>, cx: &mut Context<Self>) -> Div {
+        let text = self.text();
+        let preview = &self.review_pdf;
+        let loading = preview.loading();
+        div()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .min_h_0()
+            .w(width)
+            .border_1()
+            .border_color(rgb(BORDER))
+            .rounded_lg()
+            .overflow_hidden()
+            .bg(rgb(0xffffff))
+            .child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .px_4()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(rgb(BORDER))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child("PDF"))
+                            .when_some(filename, |s, filename| {
+                                s.child(
+                                    div()
+                                        .truncate()
+                                        .text_size(px(12.))
+                                        .text_color(rgb(MUTED))
+                                        .child(filename.to_owned()),
+                                )
+                            }),
+                    )
+                    .when_some(
+                        preview.page.as_ref().filter(|page| page.count > 1),
+                        |s, page| {
+                            s.child(
+                                div()
+                                    .flex()
+                                    .flex_shrink_0()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(button(
+                                        "pdf-previous",
+                                        text.pdf_previous_page,
+                                        false,
+                                        !loading && page.number > 1,
+                                        UiAction::PdfPage(page.number - 1),
+                                        cx,
+                                    ))
+                                    .child(
+                                        div()
+                                            .text_color(rgb(MUTED))
+                                            .child(format!("{} / {}", page.number, page.count)),
+                                    )
+                                    .child(button(
+                                        "pdf-next",
+                                        text.pdf_next_page,
+                                        false,
+                                        !loading && page.number < page.count,
+                                        UiAction::PdfPage(page.number.saturating_add(1)),
+                                        cx,
+                                    )),
+                            )
+                        },
+                    ),
+            )
+            .child(
+                div()
+                    .id("review-pdf")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&preview.scroll)
+                    .bg(rgb(BACKGROUND))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap_3()
+                            .p_4()
+                            .when(loading && preview.page.is_none(), |s| {
+                                s.child(notice(text.loading_pdf, false))
+                            })
+                            .when_some(preview.error.as_ref(), |s, error| {
+                                s.child(notice(error.clone(), true))
+                            })
+                            .when_some(preview.page.as_ref(), |s, page| {
+                                s.child(img(page.image.clone()).w((width - px(34.)).min(px(850.))))
+                            }),
+                    ),
+            )
+    }
+
+    pub(crate) fn review_actions(&self, cx: &mut Context<Self>) -> Div {
+        let text = self.text();
+        if matches!(self.state.review, ReviewState::Complete | ReviewState::Idle) {
+            return action_bar().justify_end().child(button(
+                "review-back",
+                text.back_button,
+                true,
+                true,
+                UiAction::Navigate(Screen::Results),
+                cx,
+            ));
+        }
+        let ready = matches!(self.state.review, ReviewState::Ready(_));
+        let can_skip = ready || matches!(self.state.review, ReviewState::Error(_));
+        action_bar()
+            .child(
+                div()
+                    .text_color(rgb(MUTED))
+                    .when(ready, |s| s.child(text.review_manual_hint)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_shrink_0()
+                    .gap_3()
+                    .child(button(
+                        "skip",
+                        text.skip_button,
+                        false,
+                        can_skip,
+                        UiAction::Skip,
+                        cx,
+                    ))
+                    .child(button(
+                        "accept",
+                        text.accept_upload_button,
+                        true,
+                        ready,
+                        UiAction::Accept,
+                        cx,
+                    )),
+            )
     }
 
     fn invoice_details(&self, invoice: &InvoiceSummary) -> Div {
@@ -222,14 +356,8 @@ impl App {
             .flex()
             .flex_col()
             .gap_5()
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap_5()
-                    .child(div().flex_1().min_w_0().child(identity))
-                    .child(div().w(px(340.)).flex_shrink_0().child(totals)),
-            )
+            .child(identity)
+            .child(totals)
             .child(
                 card()
                     .child(
@@ -249,7 +377,9 @@ impl App {
                             .child(
                                 div()
                                     .flex()
-                                    .gap_6()
+                                    .flex_wrap()
+                                    .gap_x_4()
+                                    .gap_y_1()
                                     .text_size(px(12.))
                                     .text_color(rgb(MUTED))
                                     .child(format!("{}: {}", text.quantity_label, item.quantity))
