@@ -10,17 +10,18 @@ use gpui::{Context, Div, FontWeight, Pixels, Window, div, img, prelude::*, px, r
 
 impl App {
     pub(crate) fn render_review(&self, window: &Window, cx: &mut Context<Self>) -> Div {
+        if matches!(self.state.review, ReviewState::Complete | ReviewState::Idle) {
+            return div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_h_0()
+                .child(self.render_review_summary(cx));
+        }
         let text = self.text();
         let context = &self.state.context;
         let email = context.emails.get(context.index);
-        let subtitle = if email.is_some() {
-            text.review_progress(context.index, context.emails.len())
-        } else {
-            format!(
-                "{}: {}  \u{b7}  {}: {}",
-                text.processed_label, context.processed, text.skipped_label, context.skipped
-            )
-        };
+        let subtitle = text.review_progress(context.index, context.emails.len());
         let details = div()
             .id("review-details")
             .flex_1()
@@ -78,23 +79,7 @@ impl App {
                 })
                 .child(self.invoice_details(&review.invoice)),
             ReviewState::Error(error) => body.child(notice(error.clone(), true)),
-            ReviewState::Complete | ReviewState::Idle => body
-                .child(notice(text.review_complete, false))
-                .children(self.state.context.saved_files.iter().map(|files| {
-                    card()
-                        .child(detail("JSON", files.json_path.display().to_string()))
-                        .child(detail("PDF", files.pdf_path.display().to_string()))
-                        .when_some(files.drive_upload.as_ref(), |s, upload| {
-                            s.child(detail(text.drive_folder_label, upload.folder_path.clone()))
-                                .child(detail(
-                                    text.drive_file_ids_label,
-                                    format!(
-                                        "JSON: {}\nPDF: {}",
-                                        upload.json_file_id, upload.pdf_file_id
-                                    ),
-                                ))
-                        })
-                })),
+            ReviewState::Complete | ReviewState::Idle => body,
         }
     }
 
@@ -205,7 +190,7 @@ impl App {
         if matches!(self.state.review, ReviewState::Complete | ReviewState::Idle) {
             return action_bar().justify_end().child(button(
                 "review-back",
-                text.back_button,
+                text.review_back_to_results,
                 true,
                 true,
                 UiAction::Navigate(Screen::Results),

@@ -55,9 +55,15 @@ impl From<&AppSettings> for SettingsInput {
 pub(crate) struct ReviewContext {
     pub emails: Vec<CandidateEmail>,
     pub index: usize,
-    pub processed: usize,
     pub skipped: usize,
-    pub saved_files: Vec<SavedInvoiceFiles>,
+    pub processed: Vec<ProcessedInvoice>,
+}
+
+pub(crate) struct ProcessedInvoice {
+    pub issuer: String,
+    pub reference: String,
+    pub issue_date: String,
+    pub files: SavedInvoiceFiles,
 }
 
 pub(crate) enum ReviewState {
@@ -234,8 +240,15 @@ impl AppState {
     }
 
     pub fn finish_save(&mut self, files: SavedInvoiceFiles) -> Option<CandidateEmail> {
-        self.context.processed += 1;
-        self.context.saved_files.push(files);
+        let ReviewState::Saving(review) = &self.review else {
+            return None;
+        };
+        self.context.processed.push(ProcessedInvoice {
+            issuer: review.invoice.issuer_name.clone(),
+            reference: review.invoice.file_slug(),
+            issue_date: review.invoice.issue_date.clone(),
+            files,
+        });
         self.context.index += 1;
         self.next_review()
     }
@@ -340,7 +353,7 @@ mod tests {
         state.begin_review();
         let json = crate::services::gmail_search::DownloadedAttachment {
             filename: "test.json".into(),
-            bytes: b"{}".to_vec(),
+            bytes: br#"{"identificacion":{"numeroControl":"DTE-TEST","fecEmi":"2026-10-15"},"emisor":{"nombre":"Test supplier"}}"#.to_vec(),
         };
         state.review = ReviewState::Ready(Box::new(InvoiceReview {
             email: email("a"),
@@ -360,7 +373,12 @@ mod tests {
             pdf_path: "test.pdf".into(),
             drive_upload: None,
         });
-        assert_eq!(state.context.processed, 1);
+        assert_eq!(state.context.processed.len(), 1);
+        let processed = &state.context.processed[0];
+        assert_eq!(processed.issuer, "Test supplier");
+        assert_eq!(processed.reference, "DTE-TEST");
+        assert_eq!(processed.issue_date, "2026-10-15");
+        assert_eq!(processed.files.pdf_path, std::path::Path::new("test.pdf"));
         assert!(matches!(state.review, ReviewState::Complete));
     }
 }

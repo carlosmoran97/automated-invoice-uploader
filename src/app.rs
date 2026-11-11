@@ -23,6 +23,7 @@ use gpui::{
     Context, Div, Entity, FocusHandle, FontWeight, IntoElement, KeyDownEvent, ScrollHandle,
     ScrollStrategy, UniformListScrollHandle, Window, actions, div, prelude::*, px, rgb,
 };
+use std::collections::HashSet;
 use time::OffsetDateTime;
 
 #[derive(Clone)]
@@ -36,6 +37,8 @@ pub(crate) enum UiAction {
     Accept,
     Skip,
     PdfPage(usize),
+    ToggleInvoiceDetails(usize),
+    OpenDriveUrl(String),
     SaveSettings,
     Language(Language),
     OpenCalendar(bool),
@@ -59,6 +62,7 @@ pub struct App {
     pub(crate) results_scroll: UniformListScrollHandle,
     pub(crate) review_scroll: ScrollHandle,
     pub(crate) review_pdf: ReviewPdf,
+    pub(crate) expanded_invoices: HashSet<usize>,
 }
 
 impl App {
@@ -125,6 +129,7 @@ impl App {
             results_scroll: UniformListScrollHandle::default(),
             review_scroll: ScrollHandle::default(),
             review_pdf: ReviewPdf::default(),
+            expanded_invoices: HashSet::new(),
         };
         app.authenticate(cx);
         app
@@ -234,6 +239,7 @@ impl App {
             }
             UiAction::ReviewSelected => {
                 if let Some(email) = self.state.begin_review() {
+                    self.expanded_invoices.clear();
                     self.load_review(email, cx);
                 }
             }
@@ -301,6 +307,12 @@ impl App {
                 }
             }
             UiAction::PdfPage(number) => self.load_pdf_page(number, cx),
+            UiAction::ToggleInvoiceDetails(index) => {
+                if !self.expanded_invoices.remove(&index) {
+                    self.expanded_invoices.insert(index);
+                }
+            }
+            UiAction::OpenDriveUrl(url) => cx.open_url(&url),
             UiAction::SaveSettings => {
                 if self.state.screen == Screen::Settings && !self.state.busy() {
                     let input = SettingsInput {
@@ -452,8 +464,9 @@ impl App {
 impl Render for App {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text = self.text();
+        let connected = matches!(self.state.authentication, AuthenticationState::Ready);
         let can_navigate = !self.state.busy()
-            && matches!(self.state.authentication, AuthenticationState::Ready)
+            && connected
             && (self.state.screen != Screen::Review
                 || matches!(self.state.review, ReviewState::Complete));
         let body = match self.state.screen {
@@ -557,19 +570,23 @@ impl Render for App {
             .when(!fixed_actions, |s| {
                 s.child(
                     div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
                         .px_8()
                         .py_3()
                         .border_t_1()
                         .border_color(rgb(BORDER))
                         .text_size(px(12.))
                         .text_color(rgb(MUTED))
-                        .child(
-                            if matches!(self.state.authentication, AuthenticationState::Ready) {
-                                text.connected_label
-                            } else {
-                                text.connection_title
-                            },
-                        ),
+                        .when(connected, |s| {
+                            s.child(div().size(px(8.)).rounded_full().bg(rgb(0x23834f)))
+                        })
+                        .child(if connected {
+                            text.connected_label
+                        } else {
+                            text.connection_title
+                        }),
                 )
             })
     }
